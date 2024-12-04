@@ -1,0 +1,8 @@
+services:
+  gcc-compiler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gcc-11.2.0-arm-unknown-linux-gnueabihf
+    volumes:
+      - ./output:/output
