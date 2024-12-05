@@ -3,6 +3,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: gcc-11.2.0-arm-unknown-linux-gnueabihf
+    image: gcc-mingw-w64-i686-to-arm
     volumes:
       - ./output:/output
