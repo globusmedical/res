@@ -1,0 +1,186 @@
+
+[env]
+GM_EXT_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/ext"
+GM_MCTRL_ARCHIVE_DIR = "${GM_EXT_DIR}/archives"
+GM_MCTRL_RES_DIR = "${GM_EXT_DIR}/res"
+GM_MCTRL_TARGET_ARCH = "armv7-unknown-linux-musleabihf"
+
+WIN_TOOLCHAIN_DIR = "armv7l-unknown-linux-musleabihf"
+WIN_TOOLCHAIN_NAME = "armv7l-unknown-linux-musleabihf"
+WIN_LINKER_NAME = "armv7l-unknown-linux-musleabihf-gcc"
+WIN_TOOLCHAIN_URL = "https://github.com/globusmedical/res/raw/refs/heads/main/gm/x86_64-w64-mingw32_to_arm-unknown-linux-musleabihf/x86_64-w64-mingw32_to_armv7l-unknown-linux-musleabihf.zip"
+WIN_TOOLCHAIN_SHA256 = "779EA385CF283E1F118EFBD7D922082CEAF890141275E4B8915641F50D773EF0"
+
+LINUX_TOOLCHAIN_DIR = "armv7l-linux-musleabihf-cross"
+LINUX_TOOLCHAIN_NAME = "armv7l-linux-musleabihf-cross"
+LINUX_LINKER_NAME = "armv7l-linux-musleabihf-gcc"
+LINUX_TOOLCHAIN_URL = "https://github.com/globusmedical/res/raw/refs/heads/main/gm/armv7l-linux-musleabihf-cross/armv7l-linux-musleabihf-cross.tgz"
+LINUX_TOOLCHAIN_SHA256 = "F49F1A15EC62364EF5E4EDB4E3990C0E1D2D1A54C90153B8F3869DAD63328A10"
+
+[tasks.pmas_build]
+dependencies = ["install_toolchain"]
+command = "cargo"
+args = [
+    "build",
+    "--target=${GM_MCTRL_TARGET_ARCH}",
+    "--features=elmo",
+    "--no-default-features",
+    "${@}",
+]
+
+[tasks.pmas_test]
+dependencies = ["install_toolchain"]
+command = "cargo"
+args = [
+    "test",
+    "--target=${GM_MCTRL_TARGET_ARCH}",
+    "--features=elmo",
+    "--no-default-features",
+    "${@}",
+]
+
+[tasks.pmas_clippy]
+dependencies = ["install_toolchain"]
+command = "cargo"
+args = [
+    "clippy",
+    "--target=${GM_MCTRL_TARGET_ARCH}",
+    "--features=elmo",
+    "--no-default-features",
+    "${@}",
+]
+
+[tasks.pmas_clean]
+dependencies = ["install_toolchain"]
+command = "cargo"
+args = ["clean", "--target=${GM_MCTRL_TARGET_ARCH}", "${@}"]
+
+[tasks.pmas_doc]
+dependencies = ["install_toolchain"]
+command = "cargo"
+args = [
+    "doc",
+    "--target=${GM_MCTRL_TARGET_ARCH}",
+    "--features=elmo",
+    "--no-default-features",
+    "--no-deps",
+    "${@}",
+]
+
+[tasks.install_toolchain]
+dependencies = ["fetch_toolchain", "activate_toolchain"]
+
+[tasks.fetch_toolchain.windows]
+private = true
+extend = "fetch_toolchain_common"
+env.GM_MCTRL_TOOLCHAIN_DIR = "${GM_EXT_DIR}/toolchains/${WIN_TOOLCHAIN_DIR}"
+env.GM_MCTRL_TOOLCHAIN_NAME = "${WIN_TOOLCHAIN_NAME}"
+env.GM_MCTRL_TOOLCHAIN_URL = "${WIN_TOOLCHAIN_URL}"
+env.GM_MCTRL_TOOLCHAIN_SHA256 = "${WIN_TOOLCHAIN_SHA256}"
+
+[tasks.fetch_toolchain.linux]
+private = true
+extend = "fetch_toolchain_common"
+env.GM_MCTRL_TOOLCHAIN_DIR = "${GM_EXT_DIR}/toolchains/${LINUX_TOOLCHAIN_DIR}"
+env.GM_MCTRL_TOOLCHAIN_NAME = "${LINUX_TOOLCHAIN_NAME}"
+env.GM_MCTRL_TOOLCHAIN_URL = "${LINUX_TOOLCHAIN_URL}"
+env.GM_MCTRL_TOOLCHAIN_SHA256 = "${LINUX_TOOLCHAIN_SHA256}"
+
+
+[tasks.activate_toolchain.windows]
+private = true
+env.GM_MCTRL_TOOLCHAIN_DIR = "${GM_EXT_DIR}/toolchains/${WIN_TOOLCHAIN_DIR}"
+env.GM_MCTRL_LINKER_NAME = "${WIN_LINKER_NAME}"
+script = '''
+#!@duckscript
+path_old = get_env PATH
+path_new = concat  "${GM_MCTRL_TOOLCHAIN_DIR}/bin;" ${path_old}
+set_env PATH ${path_new}
+set_env CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER ${GM_MCTRL_LINKER_NAME}
+'''
+
+[tasks.activate_toolchain.linux]
+private = true
+env.GM_MCTRL_TOOLCHAIN_DIR = "${GM_EXT_DIR}/toolchains/${LINUX_TOOLCHAIN_DIR}"
+env.GM_MCTRL_LINKER_NAME = "${LINUX_LINKER_NAME}"
+script = '''
+#!@duckscript
+path_old = get_env PATH
+path_new = concat  "${GM_MCTRL_TOOLCHAIN_DIR}/bin:" ${path_old}
+set_env PATH ${path_new}
+set_env CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER ${GM_MCTRL_LINKER_NAME}
+'''
+
+[tasks.fetch_toolchain_common]
+private = true
+condition.files_not_exist = [
+    "${GM_EXT_DIR}/toolchains/${GM_MCTRL_TOOLCHAIN_SHA256}.touch",
+]
+condition.fail_message = "(already downloaded)"
+script = '''
+#!@duckscript
+# Double check if toolchain is already installed
+if is_path_exists "${GM_EXT_DIR}/toolchains/${GM_MCTRL_TOOLCHAIN_SHA256}.touch"
+    exit 0
+end
+
+echo "Installing toolchain in ${GM_MCTRL_TOOLCHAIN_DIR}..."
+target_path = set "${GM_MCTRL_ARCHIVE_DIR}/${GM_MCTRL_TOOLCHAIN_NAME}.zip"
+
+# Create directories if they don't exist
+mkdir "${GM_MCTRL_ARCHIVE_DIR}"
+mkdir "${GM_MCTRL_TOOLCHAIN_DIR}"
+
+# Download toolchain
+rm -f "${target_path}"
+result = exec curl -L -o "${target_path}" "${GM_MCTRL_TOOLCHAIN_URL}"
+if not equals "${result.code}" 0
+    echo "Failed to download archive toolchain from: ${GM_MCTRL_TOOLCHAIN_URL}"
+    exit 1
+end
+
+# Calculate SHA-256 checksum
+hash = digest --algo sha256 --file "${target_path}"
+if not equals "${hash}" "${GM_MCTRL_TOOLCHAIN_SHA256}"
+    echo "SHA-256 checksum mismatch: ${hash} != ${GM_MCTRL_TOOLCHAIN_SHA256}"
+    exit 1
+end
+
+# Write checksum to "${target_path}.sha256"
+write_text_file "${target_path}.sha256" "${hash}"
+
+# Expand archive (using tar command)
+result = exec tar -xf "${target_path}" -C "${GM_EXT_DIR}/toolchains"
+if not equals "${result.code}" 0
+    echo "Failed to extract archive: ${target_path}"
+    exit 1
+end
+
+# Create response file to indicate success
+write_text_file "${GM_EXT_DIR}/toolchains/${GM_MCTRL_TOOLCHAIN_SHA256}.touch" "Toolchain installed in ${GM_MCTRL_TOOLCHAIN_DIR}"
+'''
+
+[tasks.activate_toolchain_common]
+private = true
+script = '''
+#!@duckscript
+fn get_linker_dir
+    handle = glob_array ${GM_MCTRL_TOOLCHAIN_DIR}/**/${GM_MCTRL_LINKER_NAME}{,.exe}
+    for path in ${handle}
+        release $handle
+        dir = dirname ${path}
+        return ${dir}
+    end
+    release $handle
+    return ""
+end
+
+linker_dir = get_linker_dir
+if not is_empty linker_dir
+    path_old = get_env PATH
+    path_new = concat  "${linker_dir};" ${path_old}
+    set_env PATH ${path_new}
+    set_env CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER ${GM_MCTRL_LINKER_NAME}
+    echo "Toolchain enabled: ${linker_dir}"
+end
+'''
