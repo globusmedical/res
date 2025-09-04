@@ -22,7 +22,6 @@ dependencies = ["install_toolchain"]
 command = "cargo"
 args = [
     "build",
-    "--target-dir=${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target",
     "--target=${GM_MCTRL_TARGET_ARCH}",
     "--features=elmo",
     "--no-default-features",
@@ -34,7 +33,6 @@ dependencies = ["install_toolchain"]
 command = "cargo"
 args = [
     "test",
-    "--target-dir=${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target",
     "--target=${GM_MCTRL_TARGET_ARCH}",
     "--features=elmo",
     "--no-default-features",
@@ -46,7 +44,6 @@ dependencies = ["install_toolchain"]
 command = "cargo"
 args = [
     "clippy",
-    "--target-dir=${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target",
     "--target=${GM_MCTRL_TARGET_ARCH}",
     "--features=elmo",
     "--no-default-features",
@@ -56,14 +53,13 @@ args = [
 [tasks.pmas_clean]
 dependencies = ["install_toolchain"]
 command = "cargo"
-args = ["clean", "--target-dir=${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target", "--target=${GM_MCTRL_TARGET_ARCH}", "${@}"]
+args = ["clean", "--target=${GM_MCTRL_TARGET_ARCH}", "${@}"]
 
 [tasks.pmas_doc]
 dependencies = ["install_toolchain"]
 command = "cargo"
 args = [
     "doc",
-    "--target-dir=${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target",
     "--target=${GM_MCTRL_TARGET_ARCH}",
     "--features=elmo",
     "--no-default-features",
