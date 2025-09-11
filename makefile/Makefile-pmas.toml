@@ -67,6 +67,47 @@ args = [
     "${@}",
 ]
 
+[tasks.pmas]
+description = "Generic PMAS task runner - Usage: cargo make pmas <subcommand> [args]"
+dependencies = ["install_toolchain"]
+script_runner = "@duckscript"
+script = '''
+# require subcommand
+if array_is_empty ${@}
+    echo "Error: PMAS task requires at least one argument (cargo subcommand)"
+    exit 1
+end
+
+# first token = cargo subcommand, then keep the rest in ${@}
+cargo_subcommand = array_get ${@} 0
+array_remove ${@} 0
+
+# default args to prepend if not already present
+default_args_set = set_new "--target=${GM_MCTRL_TARGET_ARCH}" "--features=elmo" "--no-default-features"
+
+# now iterate over remaining args, and remove those present in the default set from the default set
+for a in ${@}
+  if set_contains ${default_args_set} ${a}
+    set_remove ${default_args_set} ${a}
+  end
+end
+
+# assemble final args
+final = array ${cargo_subcommand}
+
+default_args = set_to_array ${default_args_set}
+for a in ${default_args}
+  array_push ${final} ${a}
+end
+
+for a in ${@}
+  array_push ${final} ${a}
+end
+
+args_line = array_join ${final} " "
+exec --fail-on-error cargo %{args_line}
+'''
+
 [tasks.install_toolchain]
 dependencies = ["fetch_toolchain", "activate_toolchain"]
 
