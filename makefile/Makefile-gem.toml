@@ -26,18 +26,6 @@ GEM_DOCKER_COMPOSE_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/makefile"
 description = "GEM task runner — Usage: cargo make gem <subcommand> [args]"
 script_runner = "@duckscript"
 script = '''
-# Skip crates that don't define a 'gem' feature (workspace propagation)
-toml_content = readfile Cargo.toml
-has_gem_feature = contains ${toml_content} "gem ="
-if not ${has_gem_feature}
-    has_gem_feature = contains ${toml_content} "gem="
-end
-if not ${has_gem_feature}
-    crate_name = get_env CARGO_MAKE_CRATE_NAME
-    echo "Skipping ${crate_name}: no gem feature"
-    exit 0
-end
-
 if array_is_empty ${@}
     echo ""
     echo "Usage: cargo make gem <subcommand> [args]"
