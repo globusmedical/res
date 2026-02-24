@@ -1,0 +1,223 @@
+# Makefile-gem.toml — Shared GEM backend build tasks
+#
+# Auto-downloaded from globusmedical/res into consumer repos via the
+# `load_script` in the root Makefile.toml.  Provides `cargo make gem *`
+# tasks that mirror `cargo make pmas *`.
+#
+# ALL GEM commands use the single entry point:
+#   cargo make gem <subcommand> [args]
+#
+# GEM builds differ from PMAS in one key way: kernel module (.ko) builds
+# require a Docker container with Linux RT kernel headers + IgH EtherCAT
+# Master.  User-space builds (callback mode, gem mock) run natively.
+#
+# Docker image: ghcr.io/globusmedical/gem-builder:latest
+#   Published from gm-ethercat-master/.github/workflows/docker-builder.yml.
+
+[env]
+GEM_BUILDER_IMAGE = "ghcr.io/globusmedical/gem-builder:latest"
+GEM_DOCKER_COMPOSE_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/makefile"
+
+# ---------------------------------------------------------------------------
+# gem — single public entry point for all GEM tasks
+# ---------------------------------------------------------------------------
+
+[tasks.gem]
+description = "GEM task runner — Usage: cargo make gem <subcommand> [args]"
+script_runner = "@duckscript"
+script = '''
+if array_is_empty ${@}
+    echo ""
+    echo "Usage: cargo make gem <subcommand> [args]"
+    echo ""
+    echo "User-space tasks (no Docker):"
+    echo "  cargo make gem build              Build with --features=gem"
+    echo "  cargo make gem test               Test with --features=gem"
+    echo "  cargo make gem clippy             Clippy with --features=gem"
+    echo "  cargo make gem doc                Generate docs"
+    echo "  cargo make gem clean              Clean build artifacts"
+    echo "  cargo make gem build-mock         Build with --features=gem,mock"
+    echo "  cargo make gem test-mock          Test with --features=gem,mock"
+    echo ""
+    echo "Docker tasks (kernel module builds):"
+    echo "  cargo make gem docker-package <crate-dir>  Build .gem package"
+    echo "  cargo make gem docker-kmod <rt-crate-dir>  Build kernel module only"
+    echo "  cargo make gem docker-shell                Interactive container shell"
+    echo "  cargo make gem docker-pull                 Pull builder image from GHCR"
+    echo ""
+    echo "Any other cargo subcommand:"
+    echo "  cargo make gem <subcommand> [args]"
+    echo "  Runs: cargo <subcommand> --features=gem --no-default-features [args]"
+    echo ""
+    exit 1
+end
+
+cargo_subcommand = array_get ${@} 0
+array_remove ${@} 0
+
+# ── Special sub-commands (mock variants) ──────────────────────────────────
+if equals ${cargo_subcommand} "build-mock"
+    final = array "build" "--features=gem,mock" "--no-default-features"
+    for a in ${@}
+        array_push ${final} ${a}
+    end
+    args_line = array_join ${final} " "
+    exec --fail-on-error cargo %{args_line}
+    exit 0
+end
+
+if equals ${cargo_subcommand} "test-mock"
+    final = array "test" "--features=gem,mock" "--no-default-features"
+    for a in ${@}
+        array_push ${final} ${a}
+    end
+    args_line = array_join ${final} " "
+    exec --fail-on-error cargo %{args_line}
+    exit 0
+end
+
+# ── Docker sub-commands (dispatched to private helper tasks) ──────────────
+if equals ${cargo_subcommand} "docker-package"
+    # Forward remaining args as env var for the helper task
+    if not array_is_empty ${@}
+        crate_dir = array_get ${@} 0
+        set_env GEM_CRATE_DIR ${crate_dir}
+    end
+    cm_run_task gem_private_docker_package
+    exit 0
+end
+if equals ${cargo_subcommand} "docker-kmod"
+    if not array_is_empty ${@}
+        rt_crate = array_get ${@} 0
+        set_env GEM_RT_CRATE ${rt_crate}
+    end
+    cm_run_task gem_private_docker_kmod
+    exit 0
+end
+if equals ${cargo_subcommand} "docker-shell"
+    cm_run_task gem_private_docker_shell
+    exit 0
+end
+if equals ${cargo_subcommand} "docker-pull"
+    cm_run_task gem_private_docker_pull
+    exit 0
+end
+
+# ── Default: cargo passthrough with GEM feature flags ─────────────────────
+default_args_set = set_new "--features=gem" "--no-default-features"
+
+for a in ${@}
+    if set_contains ${default_args_set} ${a}
+        set_remove ${default_args_set} ${a}
+    end
+end
+
+final = array ${cargo_subcommand}
+
+default_args = set_to_array ${default_args_set}
+for a in ${default_args}
+    array_push ${final} ${a}
+end
+
+for a in ${@}
+    array_push ${final} ${a}
+end
+
+args_line = array_join ${final} " "
+exec --fail-on-error cargo %{args_line}
+'''
+
+# ---------------------------------------------------------------------------
+# Private helper tasks (not intended for direct invocation)
+# ---------------------------------------------------------------------------
+
+[tasks.gem_private_ensure_compose]
+private = true
+script_runner = "@duckscript"
+script = '''
+compose_file = set "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml"
+if is_path_exists ${compose_file}
+    exit 0
+end
+
+mkdir ${GEM_DOCKER_COMPOSE_DIR}
+
+content = set "# Auto-generated by Makefile-gem.toml — do not edit manually
+services:
+  gem-builder:
+    image: ${GEM_BUILDER_IMAGE}
+    volumes:
+      - type: bind
+        source: ..
+        target: /workspace
+      - type: volume
+        source: gem-cargo-target
+        target: /tmp/cargo-target
+      - type: volume
+        source: gem-cargo-home
+        target: /root/.cargo
+    working_dir: /workspace
+    environment:
+      CARGO_TARGET_DIR: /tmp/cargo-target
+    init: true
+
+volumes:
+  gem-cargo-target:
+  gem-cargo-home:
+"
+
+writefile ${compose_file} ${content}
+echo "Generated ${compose_file}"
+'''
+
+[tasks.gem_private_docker_pull]
+private = true
+script_runner = "@duckscript"
+script = '''
+exec --fail-on-error docker pull ${GEM_BUILDER_IMAGE}
+'''
+
+[tasks.gem_private_docker_shell]
+private = true
+dependencies = ["gem_private_ensure_compose"]
+script_runner = "@shell"
+script = '''
+docker compose -f "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml" \
+    run --rm gem-builder bash
+'''
+
+[tasks.gem_private_docker_package]
+private = true
+dependencies = ["gem_private_ensure_compose"]
+script_runner = "@shell"
+script = '''
+CRATE_DIR="${GEM_CRATE_DIR:-}"
+
+if [ -z "$CRATE_DIR" ]; then
+    echo "Usage: cargo make gem docker-package <crate-dir>"
+    echo ""
+    echo "Example: cargo make gem docker-package examples/gm_mctrl_ex_velocity"
+    exit 1
+fi
+
+docker compose -f "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml" \
+    run --rm -T gem-builder \
+    gem-package "${CRATE_DIR}"
+'''
+
+[tasks.gem_private_docker_kmod]
+private = true
+dependencies = ["gem_private_ensure_compose"]
+script_runner = "@shell"
+script = '''
+RT_CRATE="${GEM_RT_CRATE:-}"
+
+if [ -z "$RT_CRATE" ]; then
+    echo "Usage: cargo make gem docker-kmod <rt-crate-dir>"
+    exit 1
+fi
+
+docker compose -f "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml" \
+    run --rm -T gem-builder \
+    gem-kmod build --rt-crate "${RT_CRATE}"
+'''
