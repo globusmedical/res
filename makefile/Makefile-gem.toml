@@ -36,12 +36,16 @@ if array_is_empty ${@}
     echo "  cargo make gem clippy             Clippy with --features=gem"
     echo "  cargo make gem doc                Generate docs"
     echo "  cargo make gem clean              Clean build artifacts"
-    echo "  cargo make gem build-mock         Build with --features=gem,mock"
-    echo "  cargo make gem test-mock          Test with --features=gem,mock"
+    echo "  cargo make gem build-mock         Build with --features=gem,gem-mock"
+    echo "  cargo make gem test-mock          Test with --features=gem,gem-mock"
+    echo "  cargo make gem kmod-clippy <rt-crate-dir>"
+    echo "                                     Clippy the RT crate (native, no Docker)"
     echo ""
     echo "Docker tasks (kernel module builds):"
-    echo "  cargo make gem docker-package <crate-dir>  Build .gem package"
-    echo "  cargo make gem docker-kmod <rt-crate-dir>  Build kernel module only"
+    echo "  cargo make gem docker-package <crate-dir> [--callback]"
+    echo "                                             Build .gem package"
+    echo "  cargo make gem docker-kmod <rt-crate-dir> --mode <sim|simrust|full>"
+    echo "                                             Build kernel module only"
     echo "  cargo make gem docker-shell                Interactive container shell"
     echo "  cargo make gem docker-pull                 Pull builder image from GHCR"
     echo ""
@@ -57,7 +61,7 @@ array_remove ${@} 0
 
 # ── Special sub-commands (mock variants) ──────────────────────────────────
 if equals ${cargo_subcommand} "build-mock"
-    final = array "build" "--features=gem,mock" "--no-default-features"
+    final = array "build" "--features=gem,gem-mock" "--no-default-features"
     for a in ${@}
         array_push ${final} ${a}
     end
@@ -67,7 +71,7 @@ if equals ${cargo_subcommand} "build-mock"
 end
 
 if equals ${cargo_subcommand} "test-mock"
-    final = array "test" "--features=gem,mock" "--no-default-features"
+    final = array "test" "--features=gem,gem-mock" "--no-default-features"
     for a in ${@}
         array_push ${final} ${a}
     end
@@ -76,20 +80,42 @@ if equals ${cargo_subcommand} "test-mock"
     exit 0
 end
 
+# ── Kernel module sub-commands ────────────────────────────────────────────
+if equals ${cargo_subcommand} "kmod-clippy"
+    if array_is_empty ${@}
+        echo "Usage: cargo make gem kmod-clippy <rt-crate-dir>"
+        echo ""
+        echo "Example: cargo make gem kmod-clippy examples/rs/rt_motion"
+        exit 1
+    end
+    rt_crate = array_get ${@} 0
+    ws_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+    manifest = set "${ws_dir}/${rt_crate}/Cargo.toml"
+    exec --fail-on-error cargo clippy --manifest-path ${manifest} --features kernel -- -W clippy::pedantic
+    exit 0
+end
+
 # ── Docker sub-commands (dispatched to private helper tasks) ──────────────
 if equals ${cargo_subcommand} "docker-package"
-    # Forward remaining args as env var for the helper task
+    # First arg = crate directory, remaining args forwarded to gem-package
     if not array_is_empty ${@}
         crate_dir = array_get ${@} 0
         set_env GEM_CRATE_DIR ${crate_dir}
+        array_remove ${@} 0
+        extra = array_join ${@} " "
+        set_env GEM_DOCKER_EXTRA_ARGS ${extra}
     end
     cm_run_task gem_private_docker_package
     exit 0
 end
 if equals ${cargo_subcommand} "docker-kmod"
+    # First arg = rt-crate dir, remaining args forwarded to gem-kmod
     if not array_is_empty ${@}
         rt_crate = array_get ${@} 0
         set_env GEM_RT_CRATE ${rt_crate}
+        array_remove ${@} 0
+        extra = array_join ${@} " "
+        set_env GEM_DOCKER_EXTRA_ARGS ${extra}
     end
     cm_run_task gem_private_docker_kmod
     exit 0
@@ -130,6 +156,26 @@ exec --fail-on-error cargo %{args_line}
 # ---------------------------------------------------------------------------
 # Private helper tasks (not intended for direct invocation)
 # ---------------------------------------------------------------------------
+
+[tasks.gem_private_docker_check]
+private = true
+script_runner = "@duckscript"
+script = '''
+# Check if docker CLI is available
+out = exec docker version --format "{{.Server.Version}}"
+if not equals ${out.code} 0
+    echo ""
+    echo "ERROR: Docker is not available."
+    echo ""
+    echo "Possible causes:"
+    echo "  - Docker Desktop is not installed  -- https://docs.docker.com/get-docker/"
+    echo "  - Docker Desktop is not running    -- Start it from the system tray or Applications"
+    echo "  - The docker CLI is not on PATH    -- Ensure docker is in your system PATH"
+    echo ""
+    exit 1
+end
+echo "Docker daemon reachable (server ${out.stdout})"
+'''
 
 [tasks.gem_private_ensure_compose]
 private = true
@@ -172,6 +218,7 @@ echo "Generated ${compose_file}"
 
 [tasks.gem_private_docker_pull]
 private = true
+dependencies = ["gem_private_docker_check"]
 script_runner = "@duckscript"
 script = '''
 exec --fail-on-error docker pull ${GEM_BUILDER_IMAGE}
@@ -179,7 +226,7 @@ exec --fail-on-error docker pull ${GEM_BUILDER_IMAGE}
 
 [tasks.gem_private_docker_shell]
 private = true
-dependencies = ["gem_private_ensure_compose"]
+dependencies = ["gem_private_docker_check", "gem_private_ensure_compose"]
 script_runner = "@shell"
 script = '''
 docker compose -f "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml" \
@@ -188,7 +235,7 @@ docker compose -f "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml" \
 
 [tasks.gem_private_docker_package]
 private = true
-dependencies = ["gem_private_ensure_compose"]
+dependencies = ["gem_private_docker_check", "gem_private_ensure_compose"]
 script_runner = "@shell"
 script = '''
 CRATE_DIR="${GEM_CRATE_DIR:-}"
@@ -202,22 +249,24 @@ fi
 
 docker compose -f "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml" \
     run --rm -T gem-builder \
-    gem-package "${CRATE_DIR}"
+    gem-package "${CRATE_DIR}" ${GEM_DOCKER_EXTRA_ARGS:-}
 '''
 
 [tasks.gem_private_docker_kmod]
 private = true
-dependencies = ["gem_private_ensure_compose"]
+dependencies = ["gem_private_docker_check", "gem_private_ensure_compose"]
 script_runner = "@shell"
 script = '''
 RT_CRATE="${GEM_RT_CRATE:-}"
 
 if [ -z "$RT_CRATE" ]; then
-    echo "Usage: cargo make gem docker-kmod <rt-crate-dir>"
+    echo "Usage: cargo make gem docker-kmod <rt-crate-dir> --mode <sim|simrust|full>"
+    echo ""
+    echo "Example: cargo make gem docker-kmod kernel/rt --mode sim"
     exit 1
 fi
 
 docker compose -f "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml" \
     run --rm -T gem-builder \
-    gem-kmod build --rt-crate "${RT_CRATE}"
+    gem-kmod build --rt-crate "${RT_CRATE}" ${GEM_DOCKER_EXTRA_ARGS:-}
 '''
