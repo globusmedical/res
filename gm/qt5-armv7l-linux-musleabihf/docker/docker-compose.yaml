@@ -1,0 +1,8 @@
+services:
+  qt5-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qt5-armv7l-linux-musleabihf-builder
+    volumes:
+      - ./output:/output

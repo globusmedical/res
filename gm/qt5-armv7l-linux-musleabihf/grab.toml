@@ -1,0 +1,17 @@
+#:schema https://globusmedical.github.io/schemas/grab/grab.toml.v1.schema.json
+
+[project]
+name = "qt5-armv7l-linux-musleabihf"
+edition = 1
+
+[defaults]
+registry = "soup-archives"
+
+[registry.soup-archives]
+url.base = "s3://globus-soup-archives"
+
+[collections.qt5]
+registry = "soup-archives"
+
+[collections.qt5.members]
+qt5-armv7l-unknown-linux-musleabihf = { version = "5.15.2", strip_single_root = true }
