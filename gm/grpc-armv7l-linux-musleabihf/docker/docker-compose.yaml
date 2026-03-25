@@ -1,0 +1,8 @@
+services:
+  grpc-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: grpc-armv7l-linux-musleabihf-builder
+    volumes:
+      - ./output:/output
