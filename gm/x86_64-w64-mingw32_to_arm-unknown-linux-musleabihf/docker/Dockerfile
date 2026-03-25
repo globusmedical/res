@@ -1,7 +1,7 @@
 # Use a base image with necessary build tools
-FROM debian:bookworm-slim
+FROM debian:bullseye-slim
 
-ARG crosstool_ng_version=1.28.0
+ARG crosstool_ng_version=1.26.0
 
 ENV TZ="UTC" \
     DEBIAN_FRONTEND="noninteractive"
@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     automake \
     bison \
     build-essential \
-    ca-certificates \
+    ca-certificates \    
     curl \
     file \
     flex \
@@ -25,7 +25,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libtool-bin \
     mingw-w64 \
     python3 \
-    rsync \
     tar \
     texinfo \
     unzip \
@@ -49,16 +48,14 @@ RUN wget http://crosstool-ng.org/download/crosstool-ng/crosstool-ng-${crosstool_
     ./configure && make && make install &&\
     rm -rf ../crosstool-ng*
 
-COPY fix_filename_cases.py /fix_filename_cases.py
-COPY --chmod=755 entrypoint.sh /entrypoint.sh
 RUN useradd -ms /bin/bash build
 USER build
 WORKDIR /home/build
 COPY ct-ng-config.ini .config
-RUN ct-ng upgradeconfig && yes "" | ct-ng oldconfig
+RUN ct-ng oldconfig
 
-# Run entrypoint as root so it can write to the volume mount
-USER root
+COPY fix_filename_cases.py /fix_filename_cases.py
+COPY entrypoint.sh /entrypoint.sh
 
 # Set the default shell
 CMD ["/entrypoint.sh"]
