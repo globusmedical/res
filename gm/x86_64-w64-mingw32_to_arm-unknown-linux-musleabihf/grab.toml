@@ -1,0 +1,16 @@
+#:schema https://globusmedical.github.io/schemas/grab/grab.toml.v1.schema.json
+
+[project]
+name = "res"
+edition = 1
+
+# ── Cross-compiler toolchain ──────────────────────────────────────────────
+
+[registry.soup-archives]
+url.base = "s3://globus-soup-archives"
+
+[collections.toolchain]
+registry = "soup-archives"
+
+[collections.toolchain.members]
+x86_64-w64-mingw32_to_armv7l-unknown-linux-musleabihf = { version = "15.2.0", revision = "4b9867a", strip_single_root = true }
