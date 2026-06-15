@@ -95,12 +95,21 @@ end
 
 if ${is_package}
     if array_is_empty ${@}
-        echo "Usage: cargo make gem package-mctrl -- <crate-dir> [flags]"
-        exit 1
+        workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+        working_dir = get_env CARGO_MAKE_WORKING_DIRECTORY
+        if equals "${working_dir}" "${workspace_dir}"
+            echo "Usage: cargo make gem package-mctrl -- <crate-dir> [flags]"
+            echo "       Or run from a package crate directory: cargo make gem package-mctrl"
+            exit 1
+        end
+        crate_dir = replace "${working_dir}" "${workspace_dir}/" ""
+        crate_dir = replace "${crate_dir}" "${workspace_dir}\\" ""
+        crate_dir = replace "${crate_dir}" "\\" "/"
+    else
+        crate_dir = array_get ${@} 0
+        array_remove ${@} 0
     end
-    crate_dir = array_get ${@} 0
     set_env GEM_CRATE_DIR ${crate_dir}
-    array_remove ${@} 0
     extra = array_join ${@} " "
     set_env GEM_DOCKER_EXTRA_ARGS ${extra}
     cm_run_task gem_private_docker_package
@@ -109,12 +118,21 @@ end
 
 if equals ${subcmd} "docker-kmod"
     if array_is_empty ${@}
-        echo "Usage: cargo make gem docker-kmod -- <rt-crate-dir> [gem-kmod flags]"
-        exit 1
+        workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+        working_dir = get_env CARGO_MAKE_WORKING_DIRECTORY
+        if equals "${working_dir}" "${workspace_dir}"
+            echo "Usage: cargo make gem docker-kmod -- <rt-crate-dir> [gem-kmod flags]"
+            echo "       Or run from an RT crate directory: cargo make gem docker-kmod"
+            exit 1
+        end
+        rt_crate = replace "${working_dir}" "${workspace_dir}/" ""
+        rt_crate = replace "${rt_crate}" "${workspace_dir}\\" ""
+        rt_crate = replace "${rt_crate}" "\\" "/"
+    else
+        rt_crate = array_get ${@} 0
+        array_remove ${@} 0
     end
-    rt_crate = array_get ${@} 0
     set_env GEM_RT_CRATE ${rt_crate}
-    array_remove ${@} 0
     extra = array_join ${@} " "
     set_env GEM_DOCKER_EXTRA_ARGS ${extra}
     cm_run_task gem_private_docker_kmod
@@ -293,16 +311,16 @@ script_runner = "@duckscript"
 script = '''
 os = os_family
 if equals ${os} "windows"
-    native = exec docker info
+    native = exec cmd /C docker info
     if equals ${native.code} 0
         exit 0
     end
-    wsl_docker = exec wsl docker info
+    wsl_docker = exec cmd /C wsl docker info
     if equals ${wsl_docker.code} 0
         exit 0
     end
 else
-    native = exec docker info
+    native = exec sh -c "docker info"
     if equals ${native.code} 0
         exit 0
     end
