@@ -1,66 +1,70 @@
-# Makefile-gem.toml — Shared GEM backend build tasks
+# Makefile-gem.toml — self-contained GEM backend build tasks
 #
-# Auto-downloaded from globusmedical/res into consumer repos via the
-# `load_script` in the root Makefile.toml.  Provides `cargo make gem *`
-# tasks that mirror `cargo make pmas *`.
-#
-# ALL GEM commands use the single entry point:
-#   cargo make gem <subcommand> [args]
-#
-# GEM builds differ from PMAS in one key way: kernel module (.ko) builds
-# require a Docker container with Linux RT kernel headers + IgH EtherCAT
-# Master.  User-space builds (callback mode, gem mock) run natively.
-#
-# Docker image: ghcr.io/globusmedical/gem-builder:latest
-#   Published from gm-ethercat-master/.github/workflows/docker-builder.yml.
+# Distributed from globusmedical/res and cached in application repositories by
+# their cargo-make bootstrap harness. The application repository is the only
+# checkout required; Docker is the only external build dependency.
 
 [env]
-GEM_BUILDER_IMAGE = "ghcr.io/globusmedical/gem-builder:latest"
-GEM_DOCKER_COMPOSE_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/makefile"
-
-# ---------------------------------------------------------------------------
-# gem — single public entry point for all GEM tasks
-# ---------------------------------------------------------------------------
+GEM_RES_BASE_URL = { value = "https://github.com/globusmedical/res/raw/refs/heads/main/makefile", condition = { env_not_set = ["GEM_RES_BASE_URL"] } }
+GEM_VOLUME_PREFIX = { value = "gem", condition = { env_not_set = ["GEM_VOLUME_PREFIX"] } }
 
 [tasks.gem]
 description = "GEM task runner — Usage: cargo make gem <subcommand> [args]"
+workspace = false
 script_runner = "@duckscript"
 script = '''
+show_help = set false
 if array_is_empty ${@}
+    show_help = set true
+else
+    first = array_get ${@} 0
+    if equals ${first} "help"
+        show_help = set true
+    elseif equals ${first} "--help"
+        show_help = set true
+    elseif equals ${first} "-h"
+        show_help = set true
+    end
+end
+
+if ${show_help}
     echo ""
     echo "Usage: cargo make gem <subcommand> [args]"
     echo ""
-    echo "User-space tasks (no Docker):"
-    echo "  cargo make gem build              Build with --features=gem"
-    echo "  cargo make gem test               Test with --features=gem"
-    echo "  cargo make gem clippy             Clippy with --features=gem"
-    echo "  cargo make gem doc                Generate docs"
-    echo "  cargo make gem clean              Clean build artifacts"
-    echo "  cargo make gem build-mock         Build with --features=gem,gem-mock"
-    echo "  cargo make gem test-mock          Test with --features=gem,gem-mock"
-    echo "  cargo make gem kmod-clippy <rt-crate-dir>"
-    echo "                                     Clippy the RT crate (native, no Docker)"
+    echo "Cargo tasks (native):"
+    echo "  build [cargo-args]         cargo build --features=gem --no-default-features"
+    echo "  test [cargo-args]          cargo test --features=gem --no-default-features"
+    echo "  clippy [cargo-args]        cargo clippy --features=gem --no-default-features"
+    echo "  doc [cargo-args]           cargo doc --features=gem --no-default-features"
+    echo "  build-mock [cargo-args]    cargo build --features=gem,gem-mock --no-default-features"
+    echo "  test-mock [cargo-args]     cargo test --features=gem,gem-mock --no-default-features"
     echo ""
-    echo "Docker tasks (kernel module builds):"
-    echo "  cargo make gem docker-package <crate-dir> [--callback]"
-    echo "                                             Build .gem package"
-    echo "  cargo make gem docker-kmod <rt-crate-dir> --mode <sim|simrust|full>"
-    echo "                                             Build kernel module only"
-    echo "  cargo make gem docker-shell                Interactive container shell"
-    echo "  cargo make gem docker-pull                 Pull builder image from GHCR"
+    echo "Docker tasks:"
+    echo "  package-mctrl <crate-dir> [flags]   Build a .gem motion-control package"
+    echo "  docker-package <crate-dir> [flags]  Alias for package-mctrl"
+    echo "  docker-package-mctrl <crate-dir>    Alias for package-mctrl"
+    echo "  docker-kmod <rt-crate-dir> [flags]  Build a kernel module only"
+    echo "  docker-shell                        Open a GEM builder shell"
+    echo "  docker-pull                         Pull the resolved GEM builder image"
     echo ""
-    echo "Any other cargo subcommand:"
-    echo "  cargo make gem <subcommand> [args]"
-    echo "  Runs: cargo <subcommand> --features=gem --no-default-features [args]"
+    echo "Image selection:"
+    echo "  The builder image is resolved from Cargo package versions using"
+    echo "  makefile/gem-builder-compat.toml. Set GEM_BUILDER_IMAGE explicitly"
+    echo "  only when intentionally overriding compatibility resolution."
     echo ""
-    exit 1
+    exit 0
 end
 
-cargo_subcommand = array_get ${@} 0
+subcmd = array_get ${@} 0
 array_remove ${@} 0
+if not array_is_empty ${@}
+    first_arg = array_get ${@} 0
+    if equals ${first_arg} "--"
+        array_remove ${@} 0
+    end
+end
 
-# ── Special sub-commands (mock variants) ──────────────────────────────────
-if equals ${cargo_subcommand} "build-mock"
+if equals ${subcmd} "build-mock"
     final = array "build" "--features=gem,gem-mock" "--no-default-features"
     for a in ${@}
         array_push ${final} ${a}
@@ -70,7 +74,7 @@ if equals ${cargo_subcommand} "build-mock"
     exit 0
 end
 
-if equals ${cargo_subcommand} "test-mock"
+if equals ${subcmd} "test-mock"
     final = array "test" "--features=gem,gem-mock" "--no-default-features"
     for a in ${@}
         array_push ${final} ${a}
@@ -80,71 +84,65 @@ if equals ${cargo_subcommand} "test-mock"
     exit 0
 end
 
-# ── Kernel module sub-commands ────────────────────────────────────────────
-if equals ${cargo_subcommand} "kmod-clippy"
-    if array_is_empty ${@}
-        echo "Usage: cargo make gem kmod-clippy <rt-crate-dir>"
-        echo ""
-        echo "Example: cargo make gem kmod-clippy examples/rs/rt_motion"
-        exit 1
-    end
-    rt_crate = array_get ${@} 0
-    ws_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
-    manifest = set "${ws_dir}/${rt_crate}/Cargo.toml"
-    exec --fail-on-error cargo clippy --manifest-path ${manifest} --features kernel -- -W clippy::pedantic
-    exit 0
+is_package = set false
+if equals ${subcmd} "package-mctrl"
+    is_package = set true
+elseif equals ${subcmd} "docker-package"
+    is_package = set true
+elseif equals ${subcmd} "docker-package-mctrl"
+    is_package = set true
 end
 
-# ── Docker sub-commands (dispatched to private helper tasks) ──────────────
-if equals ${cargo_subcommand} "docker-package"
-    # First arg = crate directory, remaining args forwarded to gem-package
-    if not array_is_empty ${@}
-        crate_dir = array_get ${@} 0
-        set_env GEM_CRATE_DIR ${crate_dir}
-        array_remove ${@} 0
-        extra = array_join ${@} " "
-        set_env GEM_DOCKER_EXTRA_ARGS ${extra}
+if ${is_package}
+    if array_is_empty ${@}
+        echo "Usage: cargo make gem package-mctrl -- <crate-dir> [flags]"
+        exit 1
     end
+    crate_dir = array_get ${@} 0
+    set_env GEM_CRATE_DIR ${crate_dir}
+    array_remove ${@} 0
+    extra = array_join ${@} " "
+    set_env GEM_DOCKER_EXTRA_ARGS ${extra}
     cm_run_task gem_private_docker_package
     exit 0
 end
-if equals ${cargo_subcommand} "docker-kmod"
-    # First arg = rt-crate dir, remaining args forwarded to gem-kmod
-    if not array_is_empty ${@}
-        rt_crate = array_get ${@} 0
-        set_env GEM_RT_CRATE ${rt_crate}
-        array_remove ${@} 0
-        extra = array_join ${@} " "
-        set_env GEM_DOCKER_EXTRA_ARGS ${extra}
+
+if equals ${subcmd} "docker-kmod"
+    if array_is_empty ${@}
+        echo "Usage: cargo make gem docker-kmod -- <rt-crate-dir> [gem-kmod flags]"
+        exit 1
     end
+    rt_crate = array_get ${@} 0
+    set_env GEM_RT_CRATE ${rt_crate}
+    array_remove ${@} 0
+    extra = array_join ${@} " "
+    set_env GEM_DOCKER_EXTRA_ARGS ${extra}
     cm_run_task gem_private_docker_kmod
     exit 0
 end
-if equals ${cargo_subcommand} "docker-shell"
+
+if equals ${subcmd} "docker-shell"
     cm_run_task gem_private_docker_shell
     exit 0
 end
-if equals ${cargo_subcommand} "docker-pull"
+
+if equals ${subcmd} "docker-pull"
     cm_run_task gem_private_docker_pull
     exit 0
 end
 
-# ── Default: cargo passthrough with GEM feature flags ─────────────────────
 default_args_set = set_new "--features=gem" "--no-default-features"
-
 for a in ${@}
     if set_contains ${default_args_set} ${a}
         set_remove ${default_args_set} ${a}
     end
 end
 
-final = array ${cargo_subcommand}
-
+final = array ${subcmd}
 default_args = set_to_array ${default_args_set}
 for a in ${default_args}
     array_push ${final} ${a}
 end
-
 for a in ${@}
     array_push ${final} ${a}
 end
@@ -153,120 +151,383 @@ args_line = array_join ${final} " "
 exec --fail-on-error cargo %{args_line}
 '''
 
-# ---------------------------------------------------------------------------
-# Private helper tasks (not intended for direct invocation)
-# ---------------------------------------------------------------------------
+[tasks.gem_private_ensure_artifacts]
+private = true
+script_runner = "@duckscript"
+script = '''
+workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+makefile_dir = set "${workspace_dir}/makefile"
+mkdir ${makefile_dir}
+
+compat_file = set "${makefile_dir}/gem-builder-compat.toml"
+helper_file = set "${makefile_dir}/gem-docker-run.sh"
+
+if not is_path_exists ${compat_file}
+    url = set "${GEM_RES_BASE_URL}/gem-builder-compat.toml"
+    result = exec curl -L --fail -o ${compat_file} ${url}
+    if not equals ${result.code} 0
+        echo "ERROR: failed to download ${url}"
+        exit 1
+    end
+end
+
+if not is_path_exists ${helper_file}
+    url = set "${GEM_RES_BASE_URL}/gem-docker-run.sh"
+    result = exec curl -L --fail -o ${helper_file} ${url}
+    if not equals ${result.code} 0
+        echo "ERROR: failed to download ${url}"
+        exit 1
+    end
+end
+'''
+
+[tasks.gem_private_resolve_builder]
+private = true
+dependencies = ["gem_private_ensure_artifacts"]
+script_runner = "@duckscript"
+script = '''
+workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+out_dir = set "${workspace_dir}/target/cargo-make"
+mkdir ${out_dir}
+out_file = set "${out_dir}/gem-builder-image.txt"
+
+override_image = get_env GEM_BUILDER_IMAGE
+if not is_empty ${override_image}
+    image = trim ${override_image}
+    writefile ${out_file} ${image}
+    echo "GEM builder image override: ${image}"
+    exit 0
+end
+
+pkg = exec cargo pkgid -p gm_mctrl_gem
+if not equals ${pkg.code} 0
+    echo "ERROR: cannot resolve gm_mctrl_gem from Cargo metadata."
+    echo "       Add a GEM-enabled gm_mctrl dependency, then run cargo update if needed."
+    exit 1
+end
+
+pkgid = trim ${pkg.stdout}
+version_part = set ""
+pkg_parts = split ${pkgid} "#"
+for part in ${pkg_parts}
+    version_part = set ${part}
+end
+release ${pkg_parts}
+
+version_text = set "${version_part}"
+if contains "${version_part}" "@"
+    at_parts = split "${version_part}" "@"
+    for part in ${at_parts}
+        version_text = set ${part}
+    end
+    release ${at_parts}
+end
+
+if is_empty ${version_text}
+    echo "ERROR: cannot parse gm_mctrl_gem version from: ${pkgid}"
+    exit 1
+end
+
+version_segments = split "${version_text}" "."
+major = set ""
+minor = set ""
+segment_index = set 0
+for segment in ${version_segments}
+    if equals "${segment_index}" "0"
+        major = set ${segment}
+    elseif equals "${segment_index}" "1"
+        minor = set ${segment}
+    end
+    segment_index = calc ${segment_index} + 1
+end
+release ${version_segments}
+if is_empty ${major}
+    echo "ERROR: cannot parse gm_mctrl_gem semantic version: ${version_text}"
+    exit 1
+end
+if is_empty ${minor}
+    echo "ERROR: cannot parse gm_mctrl_gem semantic version: ${version_text}"
+    exit 1
+end
+version_key = set "${major}.${minor}"
+
+compat_file = set "${workspace_dir}/makefile/gem-builder-compat.toml"
+compat = readfile ${compat_file}
+lines = split "${compat}" "\n"
+needle = set "gm_mctrl_gem=\"${version_key}\""
+in_match = set false
+image = set ""
+
+for line in ${lines}
+    clean = trim "${line}"
+    clean = replace "${clean}" " = " "="
+    clean = replace "${clean}" "= " "="
+    clean = replace "${clean}" " =" "="
+    if starts_with "${clean}" "[[builder]]"
+        in_match = set false
+    elseif equals "${clean}" "${needle}"
+        in_match = set true
+    elseif ${in_match}
+        if starts_with "${clean}" "image=\""
+            tmp = replace "${clean}" "image=\"" ""
+            image = replace "${tmp}" "\"" ""
+        end
+    end
+end
+release ${lines}
+
+if is_empty ${image}
+    echo "ERROR: no compatible GEM builder image found."
+    echo "       gm_mctrl_gem resolved to ${version_text}; compatibility key ${version_key}."
+    echo "       Update makefile/gem-builder-compat.toml or set GEM_BUILDER_IMAGE explicitly."
+    exit 1
+end
+
+writefile ${out_file} ${image}
+echo "GEM builder image: ${image} (gm_mctrl_gem ${version_text})"
+'''
 
 [tasks.gem_private_docker_check]
 private = true
 script_runner = "@duckscript"
 script = '''
-# Check if docker CLI is available
-out = exec docker version --format "{{.Server.Version}}"
-if not equals ${out.code} 0
-    echo ""
-    echo "ERROR: Docker is not available."
-    echo ""
-    echo "Possible causes:"
-    echo "  - Docker Desktop is not installed  -- https://docs.docker.com/get-docker/"
-    echo "  - Docker Desktop is not running    -- Start it from the system tray or Applications"
-    echo "  - The docker CLI is not on PATH    -- Ensure docker is in your system PATH"
-    echo ""
-    exit 1
+os = os_family
+if equals ${os} "windows"
+    native = exec docker info
+    if equals ${native.code} 0
+        exit 0
+    end
+    wsl_docker = exec wsl docker info
+    if equals ${wsl_docker.code} 0
+        exit 0
+    end
+else
+    native = exec docker info
+    if equals ${native.code} 0
+        exit 0
+    end
 end
-echo "Docker daemon reachable (server ${out.stdout})"
+
+echo "ERROR: Docker is not available."
+echo "       Start Docker Desktop or a WSL2 Docker daemon and retry."
+exit 1
 '''
 
-[tasks.gem_private_ensure_compose]
+[tasks.gem_private_prepare_docker_env]
 private = true
 script_runner = "@duckscript"
 script = '''
-compose_file = set "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml"
-if is_path_exists ${compose_file}
-    exit 0
+github_token = get_env GITHUB_TOKEN
+if is_empty ${github_token}
+    exit_on_error false
+    gh_out = exec gh auth token
+    exit_on_error true
+    if equals ${gh_out.code} 0
+        github_token = trim ${gh_out.stdout}
+    end
 end
 
-mkdir ${GEM_DOCKER_COMPOSE_DIR}
-
-content = set "# Auto-generated by Makefile-gem.toml — do not edit manually
-services:
-  gem-builder:
-    image: ${GEM_BUILDER_IMAGE}
-    volumes:
-      - type: bind
-        source: ..
-        target: /workspace
-      - type: volume
-        source: gem-cargo-target
-        target: /tmp/cargo-target
-      - type: volume
-        source: gem-cargo-home
-        target: /root/.cargo
-    working_dir: /workspace
-    environment:
-      CARGO_TARGET_DIR: /tmp/cargo-target
-    init: true
-
-volumes:
-  gem-cargo-target:
-  gem-cargo-home:
-"
-
-writefile ${compose_file} ${content}
-echo "Generated ${compose_file}"
-'''
-
-[tasks.gem_private_docker_pull]
-private = true
-dependencies = ["gem_private_docker_check"]
-script_runner = "@duckscript"
-script = '''
-exec --fail-on-error docker pull ${GEM_BUILDER_IMAGE}
-'''
-
-[tasks.gem_private_docker_shell]
-private = true
-dependencies = ["gem_private_docker_check", "gem_private_ensure_compose"]
-script_runner = "@shell"
-script = '''
-docker compose -f "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml" \
-    run --rm gem-builder bash
+workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+ts = current_time
+env_dir = set "${workspace_dir}/target/cargo-make"
+mkdir ${env_dir}
+env_file = set "${env_dir}/gem-env-${ts}"
+if is_empty ${github_token}
+    writefile ${env_file} ""
+else
+    writefile ${env_file} "GITHUB_TOKEN=${github_token}"
+end
+state_file = set "${env_dir}/gem-env-file.txt"
+writefile ${state_file} ${env_file}
 '''
 
 [tasks.gem_private_docker_package]
 private = true
-dependencies = ["gem_private_docker_check", "gem_private_ensure_compose"]
-script_runner = "@shell"
+dependencies = ["gem_private_docker_check", "gem_private_resolve_builder", "gem_private_prepare_docker_env"]
+script_runner = "@duckscript"
 script = '''
-CRATE_DIR="${GEM_CRATE_DIR:-}"
-
-if [ -z "$CRATE_DIR" ]; then
-    echo "Usage: cargo make gem docker-package <crate-dir>"
-    echo ""
-    echo "Example: cargo make gem docker-package examples/gm_mctrl_ex_velocity"
+workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+crate_dir = get_env GEM_CRATE_DIR
+if is_empty ${crate_dir}
+    echo "Usage: cargo make gem package-mctrl -- <crate-dir> [flags]"
     exit 1
-fi
+end
 
-docker compose -f "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml" \
-    run --rm -T gem-builder \
-    gem-package "${CRATE_DIR}" ${GEM_DOCKER_EXTRA_ARGS:-}
+image = readfile "${workspace_dir}/target/cargo-make/gem-builder-image.txt"
+image = trim ${image}
+env_file = readfile "${workspace_dir}/target/cargo-make/gem-env-file.txt"
+env_file = trim ${env_file}
+extra = get_env GEM_DOCKER_EXTRA_ARGS
+
+inner_cmd = set "gem-package ${crate_dir} ${extra}"
+set_env GEM_DOCKER_IMAGE ${image}
+set_env GEM_DOCKER_ENV_FILE ${env_file}
+set_env GEM_DOCKER_INNER_CMD ${inner_cmd}
+cm_run_task gem_private_run_docker
 '''
 
 [tasks.gem_private_docker_kmod]
 private = true
-dependencies = ["gem_private_docker_check", "gem_private_ensure_compose"]
-script_runner = "@shell"
+dependencies = ["gem_private_docker_check", "gem_private_resolve_builder", "gem_private_prepare_docker_env"]
+script_runner = "@duckscript"
 script = '''
-RT_CRATE="${GEM_RT_CRATE:-}"
-
-if [ -z "$RT_CRATE" ]; then
-    echo "Usage: cargo make gem docker-kmod <rt-crate-dir> --mode <sim|simrust|full>"
-    echo ""
-    echo "Example: cargo make gem docker-kmod kernel/rt --mode sim"
+workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+rt_crate = get_env GEM_RT_CRATE
+if is_empty ${rt_crate}
+    echo "Usage: cargo make gem docker-kmod -- <rt-crate-dir> [gem-kmod flags]"
     exit 1
-fi
+end
 
-docker compose -f "${GEM_DOCKER_COMPOSE_DIR}/gem-compose.yml" \
-    run --rm -T gem-builder \
-    gem-kmod build --rt-crate "${RT_CRATE}" ${GEM_DOCKER_EXTRA_ARGS:-}
+image = readfile "${workspace_dir}/target/cargo-make/gem-builder-image.txt"
+image = trim ${image}
+env_file = readfile "${workspace_dir}/target/cargo-make/gem-env-file.txt"
+env_file = trim ${env_file}
+extra = get_env GEM_DOCKER_EXTRA_ARGS
+
+inner_cmd = set "gem-kmod build --rt-crate ${rt_crate} ${extra}"
+set_env GEM_DOCKER_IMAGE ${image}
+set_env GEM_DOCKER_ENV_FILE ${env_file}
+set_env GEM_DOCKER_INNER_CMD ${inner_cmd}
+cm_run_task gem_private_run_docker
+'''
+
+[tasks.gem_private_docker_shell]
+private = true
+dependencies = ["gem_private_docker_check", "gem_private_resolve_builder", "gem_private_prepare_docker_env"]
+script_runner = "@duckscript"
+script = '''
+workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+image = readfile "${workspace_dir}/target/cargo-make/gem-builder-image.txt"
+image = trim ${image}
+env_file = readfile "${workspace_dir}/target/cargo-make/gem-env-file.txt"
+env_file = trim ${env_file}
+
+set_env GEM_DOCKER_IMAGE ${image}
+set_env GEM_DOCKER_ENV_FILE ${env_file}
+set_env GEM_DOCKER_INNER_CMD "exec bash"
+set_env GEM_DOCKER_INTERACTIVE "1"
+cm_run_task gem_private_run_docker
+'''
+
+[tasks.gem_private_docker_pull]
+private = true
+dependencies = ["gem_private_docker_check", "gem_private_resolve_builder", "gem_private_prepare_docker_env"]
+script_runner = "@duckscript"
+script = '''
+workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+image = readfile "${workspace_dir}/target/cargo-make/gem-builder-image.txt"
+image = trim ${image}
+env_file = readfile "${workspace_dir}/target/cargo-make/gem-env-file.txt"
+env_file = trim ${env_file}
+
+set_env GEM_DOCKER_IMAGE ${image}
+set_env GEM_DOCKER_ENV_FILE ${env_file}
+set_env GEM_DOCKER_INNER_CMD "true"
+set_env GEM_DOCKER_PULL_ONLY "1"
+cm_run_task gem_private_run_docker
+'''
+
+[tasks.gem_private_run_docker]
+private = true
+script_runner = "@duckscript"
+script = '''
+workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+workspace_fwd = replace ${workspace_dir} "\\" "/"
+helper = set "${workspace_fwd}/makefile/gem-docker-run.sh"
+
+image = get_env GEM_DOCKER_IMAGE
+env_file = get_env GEM_DOCKER_ENV_FILE
+inner_cmd = get_env GEM_DOCKER_INNER_CMD
+pull_only = get_env GEM_DOCKER_PULL_ONLY
+image = trim ${image}
+env_file = trim ${env_file}
+inner_cmd = trim ${inner_cmd}
+vol_prefix = get_env GEM_VOLUME_PREFIX
+interactive = get_env GEM_DOCKER_INTERACTIVE
+if not is_empty ${pull_only}
+    set_env GEM_DOCKER_PULL_ONLY ${pull_only}
+end
+
+parent_dir = dirname ${workspace_fwd}
+sibling_mounts = set ""
+cargo_toml = readfile "${workspace_fwd}/Cargo.toml"
+lines = split ${cargo_toml} "\n"
+sibling_names_seen = set ""
+for line in ${lines}
+    if contains ${line} "path = \"../"
+        idx_start = indexof ${line} "\"../"
+        if not is_empty ${idx_start}
+            idx_start = calc ${idx_start} + 4
+            remainder = substring ${line} ${idx_start}
+            idx_end = indexof ${remainder} "/"
+            if not is_empty ${idx_end}
+                repo_name = substring ${remainder} 0 ${idx_end}
+                already = contains ${sibling_names_seen} "|${repo_name}|"
+                if not ${already}
+                    sibling_names_seen = set "${sibling_names_seen}|${repo_name}|"
+                end
+            end
+        end
+    end
+end
+release ${lines}
+
+os = os_family
+use_wsl = set false
+docker_workspace = set ${workspace_fwd}
+docker_env_file = set ${env_file}
+docker_helper = set ${helper}
+if equals ${os} "windows"
+    use_wsl = set true
+    wsl_ws = exec wsl wslpath -u ${workspace_fwd}
+    docker_workspace = trim ${wsl_ws.stdout}
+    env_fwd = replace ${env_file} "\\" "/"
+    wsl_env = exec wsl wslpath -u ${env_fwd}
+    docker_env_file = trim ${wsl_env.stdout}
+    wsl_helper = exec wsl wslpath -u ${helper}
+    docker_helper = trim ${wsl_helper.stdout}
+end
+
+if not is_empty ${sibling_names_seen}
+    parts = split ${sibling_names_seen} "|"
+    for name in ${parts}
+        if not is_empty ${name}
+            sib_dir = set "${parent_dir}/${name}"
+            if is_directory ${sib_dir}
+                if ${use_wsl}
+                    sib_wsl = exec wsl wslpath -u ${sib_dir}
+                    sib_docker = trim ${sib_wsl.stdout}
+                else
+                    sib_docker = set ${sib_dir}
+                end
+                mount = set "${sib_docker}:/${name}"
+                if is_empty ${sibling_mounts}
+                    sibling_mounts = set ${mount}
+                else
+                    sibling_mounts = set "${sibling_mounts}@${mount}"
+                end
+            end
+        end
+    end
+    release ${parts}
+end
+
+sibling_mounts_arg = set "${sibling_mounts}"
+if is_empty ${sibling_mounts_arg}
+    sibling_mounts_arg = set "-"
+end
+
+if equals ${interactive} "1"
+    if ${use_wsl}
+        exec --fail-on-error wsl bash ${docker_helper} --interactive ${docker_workspace} ${docker_env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${inner_cmd}
+    else
+        exec --fail-on-error bash ${docker_helper} --interactive ${docker_workspace} ${env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${inner_cmd}
+    end
+else
+    if ${use_wsl}
+        exec --fail-on-error wsl bash ${docker_helper} ${docker_workspace} ${docker_env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${inner_cmd}
+    else
+        exec --fail-on-error bash ${docker_helper} ${docker_workspace} ${env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${inner_cmd}
+    end
+end
 '''

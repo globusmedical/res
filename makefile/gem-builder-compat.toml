@@ -1,0 +1,5 @@
+[[builder]]
+gm_mctrl_gem="0.20"
+image="ghcr.io/globusmedical/gem-builder:1.1.0"
+gem_os=">=0.28.4"
+kernel="6.12.74+deb13+1-rt-amd64"
