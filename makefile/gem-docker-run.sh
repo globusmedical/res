@@ -19,6 +19,10 @@ if [[ "$SIBLINGS" == "-" ]]; then
     SIBLINGS=""
 fi
 
+# The env file may contain credentials (e.g. GITHUB_TOKEN); always remove it
+# on exit, including when 'set -e' aborts the script on a failed command.
+trap 'rm -f "$ENV_FILE"' EXIT
+
 IMAGE="$(printf '%s' "$IMAGE" | tr -d '[:space:]')"
 if [[ -z "$IMAGE" ]]; then
     echo "ERROR: GEM builder image is empty." >&2
@@ -46,7 +50,6 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 if [[ "${GEM_DOCKER_PULL_ONLY:-}" == "1" ]]; then
-    rm -f "$ENV_FILE"
     exit 0
 fi
 
@@ -73,6 +76,3 @@ docker run --rm $INTERACTIVE \
     -e CARGO_NET_GIT_FETCH_WITH_CLI=true \
     --init "$IMAGE" \
     bash -c "$INNER_CMD"
-status=$?
-rm -f "$ENV_FILE"
-exit "$status"
