@@ -377,7 +377,7 @@ env_file = readfile "${workspace_dir}/target/cargo-make/gem-env-file.txt"
 env_file = trim ${env_file}
 extra = get_env GEM_DOCKER_EXTRA_ARGS
 
-inner_cmd = set "gem-package ${crate_dir} ${extra}"
+inner_cmd = set "gem-package ${crate_dir} ${extra}; if [ -f /workspace/makefile/verify-split-rt-package.sh ]; then bash /workspace/makefile/verify-split-rt-package.sh ${crate_dir}; fi"
 set_env GEM_DOCKER_IMAGE ${image}
 set_env GEM_DOCKER_ENV_FILE ${env_file}
 set_env GEM_DOCKER_INNER_CMD ${inner_cmd}
