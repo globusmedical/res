@@ -13,7 +13,8 @@ ENV_FILE="$2"
 VOL_PREFIX="$3"
 IMAGE="$4"
 SIBLINGS="$5"
-shift 5
+EXTRACT_ARTIFACTS="${6:-0}"
+shift 6
 INNER_CMD="$*"
 if [[ "$SIBLINGS" == "-" ]]; then
     SIBLINGS=""
@@ -76,3 +77,72 @@ docker run --rm $INTERACTIVE \
     -e CARGO_NET_GIT_FETCH_WITH_CLI=true \
     --init "$IMAGE" \
     bash -c "$INNER_CMD"
+
+if [[ "$EXTRACT_ARTIFACTS" == "1" ]]; then
+    docker run --rm \
+        -v "$WORKSPACE:/workspace" \
+        -v "$VOL_PREFIX-cargo-target:/tmp/cargo-target" \
+        --init "$IMAGE" \
+        bash -c '
+            set -euo pipefail
+            out=/workspace/target/gem/cargo-artifacts
+            rm -rf "$out"
+            mkdir -p "$out"
+
+            cmd=$1
+            profile=debug
+            if [[ " $cmd " == *" --release "* ]]; then
+                profile=release
+            fi
+
+            read -r -a words <<< "$cmd"
+            packages=()
+            for ((i = 0; i < ${#words[@]}; i++)); do
+                case "${words[$i]}" in
+                    -p|--package)
+                        if (( i + 1 < ${#words[@]} )); then
+                            packages+=("${words[$((i + 1))]//-/_}")
+                        fi
+                        ;;
+                    --package=*)
+                        pkg=${words[$i]#--package=}
+                        packages+=("${pkg//-/_}")
+                        ;;
+                esac
+            done
+
+            matches_package() {
+                local base=$1
+                if (( ${#packages[@]} == 0 )); then
+                    return 0
+                fi
+                for pkg in "${packages[@]}"; do
+                    if [[ "$base" == "$pkg" || "$base" == "lib$pkg."* ]]; then
+                        return 0
+                    fi
+                done
+                return 1
+            }
+
+            while IFS= read -r profile_dir; do
+                find "$profile_dir" -maxdepth 2 \
+                    \( -path "*/deps/*" -o -path "*/build/*" -o -path "*/incremental/*" -o -path "*/.fingerprint/*" \) -prune \
+                    -o -type f \
+                    \( -perm -111 -o -name "*.so" -o -name "*.dylib" -o -name "*.a" -o -name "*.rlib" \) \
+                    -print
+            done < <(find /tmp/cargo-target -type d -name "$profile" -print) | while IFS= read -r artifact; do
+                base=$(basename "$artifact")
+                if matches_package "$base"; then
+                    rel=${artifact#/tmp/cargo-target/}
+                    mkdir -p "$out/$(dirname "$rel")"
+                    cp -a "$artifact" "$out/$rel"
+                fi
+            done
+
+            if ! find "$out" -type f -print -quit | grep -q .; then
+                echo "WARNING: no final cargo artifacts found to extract from /tmp/cargo-target" >&2
+            else
+                echo "Extracted GEM cargo artifacts to $out"
+            fi
+        ' -- "$INNER_CMD"
+fi

@@ -80,6 +80,7 @@ end
 
 if ${is_cargo_gem}
     has_no_default = set false
+    extract_artifacts = set false
 
     for a in ${@}
         if equals ${a} "--no-default-features"
@@ -91,11 +92,15 @@ if ${is_cargo_gem}
     if equals ${subcmd} "build-mock"
         array_set final 0 "build"
         array_push ${final} "--features=gem,gem-mock"
+        extract_artifacts = set true
     elseif equals ${subcmd} "test-mock"
         array_set final 0 "test"
         array_push ${final} "--features=gem,gem-mock"
     else
         array_push ${final} "--features=gem"
+        if equals ${subcmd} "build"
+            extract_artifacts = set true
+        end
     end
 
     if not ${has_no_default}
@@ -108,6 +113,11 @@ if ${is_cargo_gem}
 
     args_line = array_join ${final} " "
     set_env GEM_DOCKER_INNER_CMD "cargo ${args_line}"
+    if ${extract_artifacts}
+        set_env GEM_DOCKER_EXTRACT_ARTIFACTS "1"
+    else
+        set_env GEM_DOCKER_EXTRACT_ARTIFACTS ""
+    end
     cm_run_task gem_private_docker_cargo
     exit 0
 end
@@ -514,14 +524,19 @@ helper = set "${workspace_fwd}/makefile/gem-docker-run.sh"
 image = get_env GEM_DOCKER_IMAGE
 env_file = get_env GEM_DOCKER_ENV_FILE
 inner_cmd = get_env GEM_DOCKER_INNER_CMD
+extract_artifacts = get_env GEM_DOCKER_EXTRACT_ARTIFACTS
 pull_only = get_env GEM_DOCKER_PULL_ONLY
 image = trim ${image}
 env_file = trim ${env_file}
 inner_cmd = trim ${inner_cmd}
+extract_artifacts = trim ${extract_artifacts}
 vol_prefix = get_env GEM_VOLUME_PREFIX
 interactive = get_env GEM_DOCKER_INTERACTIVE
 if not is_empty ${pull_only}
     set_env GEM_DOCKER_PULL_ONLY ${pull_only}
+end
+if is_empty ${extract_artifacts}
+    extract_artifacts = set "0"
 end
 
 parent_dir = dirname ${workspace_fwd}
@@ -595,15 +610,15 @@ end
 
 if equals ${interactive} "1"
     if ${use_wsl}
-        exec --fail-on-error wsl bash ${docker_helper} --interactive ${docker_workspace} ${docker_env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${inner_cmd}
+        exec --fail-on-error wsl bash ${docker_helper} --interactive ${docker_workspace} ${docker_env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${extract_artifacts} ${inner_cmd}
     else
-        exec --fail-on-error bash ${docker_helper} --interactive ${docker_workspace} ${env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${inner_cmd}
+        exec --fail-on-error bash ${docker_helper} --interactive ${docker_workspace} ${env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${extract_artifacts} ${inner_cmd}
     end
 else
     if ${use_wsl}
-        exec --fail-on-error wsl bash ${docker_helper} ${docker_workspace} ${docker_env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${inner_cmd}
+        exec --fail-on-error wsl bash ${docker_helper} ${docker_workspace} ${docker_env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${extract_artifacts} ${inner_cmd}
     else
-        exec --fail-on-error bash ${docker_helper} ${docker_workspace} ${env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${inner_cmd}
+        exec --fail-on-error bash ${docker_helper} ${docker_workspace} ${env_file} ${vol_prefix} ${image} ${sibling_mounts_arg} ${extract_artifacts} ${inner_cmd}
     end
 end
 '''
