@@ -31,21 +31,20 @@ if ${show_help}
     echo ""
     echo "Usage: cargo make gem <subcommand> [args]"
     echo ""
-    echo "Cargo tasks (native):"
-    echo "  build [cargo-args]         cargo build --features=gem --no-default-features"
-    echo "  test [cargo-args]          cargo test --features=gem --no-default-features"
-    echo "  clippy [cargo-args]        cargo clippy --features=gem --no-default-features"
-    echo "  doc [cargo-args]           cargo doc --features=gem --no-default-features"
-    echo "  build-mock [cargo-args]    cargo build --features=gem,gem-mock --no-default-features"
-    echo "  test-mock [cargo-args]     cargo test --features=gem,gem-mock --no-default-features"
+    echo "GEM target tasks (Docker-backed):"
+    echo "  build [cargo-args]         cargo build for GEM target defaults"
+    echo "  test [cargo-args]          cargo test for GEM target defaults"
+    echo "  clippy [cargo-args]        cargo clippy for GEM target defaults"
+    echo "  doc [cargo-args]           cargo doc for GEM target defaults"
+    echo "  build-mock [cargo-args]    cargo build with gem,gem-mock defaults"
+    echo "  test-mock [cargo-args]     cargo test with gem,gem-mock defaults"
     echo ""
-    echo "Docker tasks:"
+    echo "Packaging tasks:"
     echo "  package-mctrl <crate-dir> [flags]   Build a .gem motion-control package"
-    echo "  docker-package <crate-dir> [flags]  Alias for package-mctrl"
-    echo "  docker-package-mctrl <crate-dir>    Alias for package-mctrl"
-    echo "  docker-kmod <rt-crate-dir> [flags]  Build a kernel module only"
-    echo "  docker-shell                        Open a GEM builder shell"
-    echo "  docker-pull                         Pull the resolved GEM builder image"
+    echo "  kmod <rt-crate-dir> [flags]         Build a kernel module only"
+    echo ""
+    echo "Developer/internal compatibility aliases (not required for normal usage):"
+    echo "  docker-package, docker-package-mctrl, docker-kmod, docker-shell, docker-pull"
     echo ""
     echo "Image selection:"
     echo "  The builder image is resolved from Cargo package versions using"
@@ -64,23 +63,52 @@ if not array_is_empty ${@}
     end
 end
 
-if equals ${subcmd} "build-mock"
-    final = array "build" "--features=gem,gem-mock" "--no-default-features"
-    for a in ${@}
-        array_push ${final} ${a}
-    end
-    args_line = array_join ${final} " "
-    exec --fail-on-error cargo %{args_line}
-    exit 0
+is_cargo_gem = set false
+if equals ${subcmd} "build"
+    is_cargo_gem = set true
+elseif equals ${subcmd} "test"
+    is_cargo_gem = set true
+elseif equals ${subcmd} "clippy"
+    is_cargo_gem = set true
+elseif equals ${subcmd} "doc"
+    is_cargo_gem = set true
+elseif equals ${subcmd} "build-mock"
+    is_cargo_gem = set true
+elseif equals ${subcmd} "test-mock"
+    is_cargo_gem = set true
 end
 
-if equals ${subcmd} "test-mock"
-    final = array "test" "--features=gem,gem-mock" "--no-default-features"
+if ${is_cargo_gem}
+    has_no_default = set false
+
+    for a in ${@}
+        if equals ${a} "--no-default-features"
+            has_no_default = set true
+        end
+    end
+
+    final = array ${subcmd}
+    if equals ${subcmd} "build-mock"
+        array_set final 0 "build"
+        array_push ${final} "--features=gem,gem-mock"
+    elseif equals ${subcmd} "test-mock"
+        array_set final 0 "test"
+        array_push ${final} "--features=gem,gem-mock"
+    else
+        array_push ${final} "--features=gem"
+    end
+
+    if not ${has_no_default}
+        array_push ${final} "--no-default-features"
+    end
+
     for a in ${@}
         array_push ${final} ${a}
     end
+
     args_line = array_join ${final} " "
-    exec --fail-on-error cargo %{args_line}
+    set_env GEM_DOCKER_INNER_CMD "cargo ${args_line}"
+    cm_run_task gem_private_docker_cargo
     exit 0
 end
 
@@ -113,6 +141,29 @@ if ${is_package}
     extra = array_join ${@} " "
     set_env GEM_DOCKER_EXTRA_ARGS ${extra}
     cm_run_task gem_private_docker_package
+    exit 0
+end
+
+if equals ${subcmd} "kmod"
+    if array_is_empty ${@}
+        workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+        working_dir = get_env CARGO_MAKE_WORKING_DIRECTORY
+        if equals "${working_dir}" "${workspace_dir}"
+            echo "Usage: cargo make gem kmod -- <rt-crate-dir> [gem-kmod flags]"
+            echo "       Or run from an RT crate directory: cargo make gem kmod"
+            exit 1
+        end
+        rt_crate = replace "${working_dir}" "${workspace_dir}/" ""
+        rt_crate = replace "${rt_crate}" "${workspace_dir}\\" ""
+        rt_crate = replace "${rt_crate}" "\\" "/"
+    else
+        rt_crate = array_get ${@} 0
+        array_remove ${@} 0
+    end
+    set_env GEM_RT_CRATE ${rt_crate}
+    extra = array_join ${@} " "
+    set_env GEM_DOCKER_EXTRA_ARGS ${extra}
+    cm_run_task gem_private_docker_kmod
     exit 0
 end
 
@@ -149,24 +200,31 @@ if equals ${subcmd} "docker-pull"
     exit 0
 end
 
-default_args_set = set_new "--features=gem" "--no-default-features"
-for a in ${@}
-    if set_contains ${default_args_set} ${a}
-        set_remove ${default_args_set} ${a}
-    end
+echo "ERROR: unsupported gem subcommand '${subcmd}'."
+echo "Run 'cargo make gem help' for supported commands."
+exit 1
+'''
+
+[tasks.gem_private_docker_cargo]
+private = true
+dependencies = ["gem_private_docker_check", "gem_private_resolve_builder", "gem_private_prepare_docker_env"]
+script_runner = "@duckscript"
+script = '''
+workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+image = readfile "${workspace_dir}/target/cargo-make/gem-builder-image.txt"
+image = trim ${image}
+env_file = readfile "${workspace_dir}/target/cargo-make/gem-env-file.txt"
+env_file = trim ${env_file}
+inner_cmd = get_env GEM_DOCKER_INNER_CMD
+if is_empty ${inner_cmd}
+    echo "ERROR: GEM_DOCKER_INNER_CMD is empty."
+    exit 1
 end
 
-final = array ${subcmd}
-default_args = set_to_array ${default_args_set}
-for a in ${default_args}
-    array_push ${final} ${a}
-end
-for a in ${@}
-    array_push ${final} ${a}
-end
-
-args_line = array_join ${final} " "
-exec --fail-on-error cargo %{args_line}
+set_env GEM_DOCKER_IMAGE ${image}
+set_env GEM_DOCKER_ENV_FILE ${env_file}
+set_env GEM_DOCKER_INNER_CMD ${inner_cmd}
+cm_run_task gem_private_run_docker
 '''
 
 [tasks.gem_private_ensure_artifacts]
