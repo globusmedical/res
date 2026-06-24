@@ -42,6 +42,7 @@ if ${show_help}
     echo "Packaging tasks:"
     echo "  package-mctrl <crate-dir> [flags]   Build a .gem motion-control package"
     echo "  kmod <rt-crate-dir> [flags]         Build a kernel module only"
+    echo "  gemctl <args>                       Run host gemctl (no remote SSH shell)"
     echo ""
     echo "Developer/internal compatibility aliases (not required for normal usage):"
     echo "  docker-package, docker-package-mctrl, docker-kmod, docker-shell, docker-pull"
@@ -207,6 +208,52 @@ end
 
 if equals ${subcmd} "docker-pull"
     cm_run_task gem_private_docker_pull
+    exit 0
+end
+
+if equals ${subcmd} "gemctl"
+    if array_is_empty ${@}
+        echo "Usage: cargo make gem gemctl -- <gemctl-args>"
+        echo "Examples:"
+        echo "  cargo make gem gemctl -- --server http://192.168.1.10:50051 health"
+        echo "  cargo make gem gemctl -- mctrl status"
+        echo "Server resolution:"
+        echo "  1) explicit --server in args"
+        echo "  2) GEM_SERVER env"
+        echo "  3) GEM_POC_HOST env -> http://<host>:50051"
+        exit 1
+    end
+
+    args_line = array_join ${@} " "
+    server = get_env GEM_SERVER
+
+    if is_empty ${server}
+        poc_host = get_env GEM_POC_HOST
+        if not is_empty ${poc_host}
+            server_host = set ${poc_host}
+            if contains "${server_host}" "@"
+                host_parts = split "${server_host}" "@"
+                for p in ${host_parts}
+                    server_host = set ${p}
+                end
+                release ${host_parts}
+            end
+            server = set "http://${server_host}:50051"
+        end
+    end
+
+    os = os_family
+    if is_empty ${server}
+        cmdline = set "cargo run --manifest-path ../gm-ethercat-master/Cargo.toml --bin gemctl -- ${args_line}"
+    else
+        cmdline = set "cargo run --manifest-path ../gm-ethercat-master/Cargo.toml --bin gemctl -- --server ${server} ${args_line}"
+    end
+
+    if equals ${os} "windows"
+        exec --fail-on-error cmd /C ${cmdline}
+    else
+        exec --fail-on-error sh -c "${cmdline}"
+    end
     exit 0
 end
 
