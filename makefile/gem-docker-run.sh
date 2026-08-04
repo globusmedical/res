@@ -39,15 +39,35 @@ if [[ -n "$TOKEN" ]]; then
     printf '%s' "$TOKEN" | docker login ghcr.io -u github --password-stdin >/dev/null
 fi
 
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    echo "Pulling GEM builder image: $IMAGE"
-    if ! docker pull "$IMAGE"; then
+# The builder tag is mutable — the publishing workflow overwrites it whenever the
+# image contents change. A cached tag must therefore never be trusted without a
+# pull: a stale image silently links the kernel module against a different SHM
+# ABI than the crates it is built with, and nothing downstream catches it until
+# gemd rejects the package at deploy time.
+if [[ "${GEM_DOCKER_NO_PULL:-}" == "1" ]]; then
+    echo "WARNING: GEM_DOCKER_NO_PULL=1 — skipping pull; cached image may be stale." >&2
+elif ! docker pull "$IMAGE"; then
+    if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        echo "" >&2
+        echo "WARNING: could not pull $IMAGE; falling back to the local cache." >&2
+        echo "         This tag is mutable, so the cached image may be STALE and may" >&2
+        echo "         embed a different SHM ABI than the crates being built." >&2
+        echo "" >&2
+    else
         echo "" >&2
         echo "ERROR: failed to pull GEM builder image: $IMAGE" >&2
         echo "       Ensure you can access ghcr.io/globusmedical/gem-builder." >&2
         echo "       Run 'gh auth login' or set GITHUB_TOKEN, then retry." >&2
         exit 1
     fi
+fi
+
+# Pin the run to an immutable digest and record it: the tag alone does not
+# identify which SHM ABI the produced artifact was built against.
+IMAGE_DIGEST="$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$IMAGE" 2>/dev/null || true)"
+if [[ -n "$IMAGE_DIGEST" ]]; then
+    echo "GEM builder image digest: $IMAGE_DIGEST" >&2
+    IMAGE="$IMAGE_DIGEST"
 fi
 
 if [[ "${GEM_DOCKER_PULL_ONLY:-}" == "1" ]]; then
