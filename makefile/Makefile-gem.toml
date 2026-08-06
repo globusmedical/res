@@ -1,11 +1,11 @@
 # Makefile-gem.toml — self-contained GEM backend build tasks
 #
-# Distributed from globusmedical/res and cached in application repositories by
-# their cargo-make bootstrap harness. The application repository is the only
-# checkout required; Docker is the only external build dependency.
+# This repository (globusmedical/res) is the canonical source of these build
+# tasks. Application repositories vendor a git-tracked copy pulled from here
+# deliberately (see e.g. rs-gm_mctrl/makefile/) — not auto-synced. Docker is
+# the only external build dependency.
 
 [env]
-GEM_RES_BASE_URL = { value = "https://github.com/globusmedical/res/raw/refs/heads/main/makefile", condition = { env_not_set = ["GEM_RES_BASE_URL"] } }
 GEM_VOLUME_PREFIX = { value = "gem", condition = { env_not_set = ["GEM_VOLUME_PREFIX"] } }
 
 [tasks.gem]
@@ -41,8 +41,23 @@ if ${show_help}
     echo ""
     echo "Packaging tasks:"
     echo "  package-mctrl <crate-dir> [flags]   Build a .gem motion-control package"
-    echo "  kmod <rt-crate-dir> [flags]         Build a kernel module only"
+    echo "  kmod <rt-crate-dir> [flags]         Build a kernel module (off-target finalizer)"
     echo "  gemctl <args>                       Run host gemctl (no remote SSH shell)"
+    echo ""
+    echo "Kernel modules are built by completing the GEM OS module kit with your"
+    echo "RT crate. This needs only a Rust toolchain — no Docker, no kernel"
+    echo "headers, no Linux — and produces the module that actually ships."
+    echo "'docker-kmod' rebuilds the same source with the kernel toolchain as a"
+    echo "validation oracle; its output is never shipped."
+    echo ""
+    echo "Kit resolution (cargo make gem kmod):"
+    echo "  1) GEM_KIT_DIR                  an already-extracted kit directory"
+    echo "  2) GEM_OS_VERSION               one exact release, e.g. 0.35.0"
+    echo "  3) the compatible range implied by your gm_mctrl_gem version,"
+    echo "     read from makefile/gem-builder-compat.toml (default)"
+    echo "  The kit is fetched with grab from the soup-archives registry, which"
+    echo "  resolves the newest release in range and verifies what it caches."
+    echo "  Set GEM_KIT_REFRESH=1 to re-resolve instead of reusing the local copy."
     echo ""
     echo "Developer/internal compatibility aliases (not required for normal usage):"
     echo "  docker-package, docker-package-mctrl, docker-kmod, docker-shell, docker-pull"
@@ -51,6 +66,12 @@ if ${show_help}
     echo "  The builder image is resolved from Cargo package versions using"
     echo "  makefile/gem-builder-compat.toml. Set GEM_BUILDER_IMAGE explicitly"
     echo "  only when intentionally overriding compatibility resolution."
+    echo ""
+    echo "Environment variable overrides:"
+    echo "  GEM_BUILDER_IMAGE      Override the resolved builder image tag (advanced)."
+    echo "  GEM_DOCKER_SIBLINGS    Mount extra host directories into the builder container."
+    echo "                         Format: host_path:container_path"
+    echo "                         Multiple mounts: host1:cont1@host2:cont2"
     echo ""
     exit 0
 end
@@ -174,7 +195,7 @@ if equals ${subcmd} "kmod"
     set_env GEM_RT_CRATE ${rt_crate}
     extra = array_join ${@} " "
     set_env GEM_DOCKER_EXTRA_ARGS ${extra}
-    cm_run_task gem_private_docker_kmod
+    cm_run_task gem_private_finalize
     exit 0
 end
 
@@ -262,6 +283,373 @@ echo "Run 'cargo make gem help' for supported commands."
 exit 1
 '''
 
+[tasks.gem_private_finalize]
+private = true
+description = "Complete the GEM OS module kit with an RT crate, off-target"
+dependencies = ["gem_private_ensure_artifacts"]
+script_runner = "node"
+script_extension = "mjs"
+script = '''
+import { spawnSync } from "child_process";
+import {
+    existsSync, mkdirSync, readFileSync, rmSync, writeFileSync,
+} from "fs";
+import { isAbsolute, join, relative, resolve, sep } from "path";
+
+const GEM_OS_REPO = "globusmedical/gm-ethercat-master";
+
+// Registry the GEM OS release pipeline publishes the module kit to.
+const KIT_PACKAGE = "gem-module-kit";
+const KIT_REGISTRY = "soup-archives";
+const KIT_REGISTRY_URL = "s3://globus-soup-archives";
+
+const workspaceDir =
+    process.env.CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY ?? process.cwd();
+
+// The Docker packaging path reuses this script purely to resolve (and cache)
+// the kit on the host; it finalizes later, inside the container.
+const resolveOnly = process.env.GEM_KIT_RESOLVE_ONLY === "1";
+
+const rtCrate = process.env.GEM_RT_CRATE;
+if (!resolveOnly && !rtCrate) {
+    console.error("ERROR: GEM_RT_CRATE is empty.");
+    process.exit(1);
+}
+
+function run(cmd, args, opts = {}) {
+    const child = spawnSync(cmd, args, { stdio: "inherit", ...opts });
+    return child.status ?? 1;
+}
+
+function capture(cmd, args, opts = {}) {
+    const child = spawnSync(cmd, args, { encoding: "utf8", ...opts });
+    return child.status === 0 ? child.stdout.trim() : null;
+}
+
+// ---------------------------------------------------------------------------
+// 1. The finalizer binary.
+//
+// A sibling gm-ethercat-master checkout is preferred so a developer working on
+// both repositories finalizes with the tooling they are editing, rather than a
+// stale installed copy. Which one won decides what toolchain builds the
+// shipped module, so it is always reported rather than left ambient.
+// ---------------------------------------------------------------------------
+function resolveGemKmod() {
+    const sibling = resolve(workspaceDir, "..", "gm-ethercat-master", "tools", "rs", "gem_kmod");
+    if (existsSync(join(sibling, "Cargo.toml"))) {
+        return { kind: "path", location: sibling };
+    }
+    const version = capture("gem-kmod", ["--version"]);
+    if (version !== null) {
+        return { kind: "installed", version };
+    }
+    return { kind: "missing" };
+}
+
+const kmod = resolveGemKmod();
+if (!resolveOnly && kmod.kind === "missing") {
+    console.error("ERROR: gem-kmod is not available.");
+    console.error("");
+    console.error("Install it from the GEM OS release you target:");
+    console.error(`  cargo install --locked --git https://github.com/${GEM_OS_REPO} \\`);
+    console.error("      --tag gem/v<version> gem_kmod --features cli");
+    console.error("");
+    console.error("Or check out gm-ethercat-master next to this repository.");
+    process.exit(1);
+}
+if (!resolveOnly) {
+    console.log(
+        kmod.kind === "path"
+            ? `Finalizer: sibling checkout ${kmod.location}`
+            : `Finalizer: installed ${kmod.version}`,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2. The module kit.
+//
+// The kit's __versions table and vermagic are fixed by the kernel of the GEM OS
+// release it was cut from, so the kit version and the target GEM OS version
+// must agree. Mismatches are rejected by the finalizer, not silently accepted.
+// ---------------------------------------------------------------------------
+// The schema version this finalizer understands. Kept in sync with
+// `KIT_FORMAT` in tools/rs/gem_kmod/src/kit.rs.
+const EXPECTED_KIT_FORMAT = 2;
+
+// Which GEM OS releases this build may use is a property of the source tree,
+// not of whoever happens to build it today — but it is not a number anyone
+// should maintain by hand either. Choosing a gm_mctrl GEM backend already
+// chooses a compatible range of GEM OS releases, so derive the range from the
+// backend version Cargo resolved and let the registry pick the newest release
+// inside it.
+function resolveBackendVersion() {
+    const pkgid = capture("cargo", ["pkgid", "-p", "gm_mctrl_gem"], { cwd: workspaceDir });
+    if (!pkgid) {
+        console.error("ERROR: cannot resolve gm_mctrl_gem from Cargo metadata.");
+        console.error("Add a GEM-enabled gm_mctrl dependency, then run cargo update.");
+        process.exit(1);
+    }
+    // `cargo pkgid` prints e.g. `registry+https://...#gm_mctrl_gem@0.22.0`
+    // or `path+file:///...#0.22.0`.
+    const tail = pkgid.split("#").pop();
+    const version = tail.includes("@") ? tail.split("@").pop() : tail;
+    const parts = version.split(".");
+    if (parts.length < 2) {
+        console.error(`ERROR: cannot parse gm_mctrl_gem version from: ${pkgid}`);
+        process.exit(1);
+    }
+    return { version, key: `${parts[0]}.${parts[1]}` };
+}
+
+// Reads the same compatibility table that resolves the builder image, so the
+// backend version has exactly one place that says what it is compatible with.
+function lookupCompatibleGemOs(key) {
+    const path = join(workspaceDir, "makefile", "gem-builder-compat.toml");
+    let table;
+    try {
+        table = readFileSync(path, "utf8");
+    } catch (e) {
+        console.error(`ERROR: cannot read ${path} (${e.message}).`);
+        process.exit(1);
+    }
+
+    let inMatch = false;
+    for (const line of table.split("\n")) {
+        const clean = line.trim().replace(/\s*=\s*/g, "=");
+        if (clean.startsWith("[[builder]]")) {
+            inMatch = false;
+        } else if (clean === `gm_mctrl_gem="${key}"`) {
+            inMatch = true;
+        } else if (inMatch && clean.startsWith("gem_os=")) {
+            return clean.slice("gem_os=".length).replace(/"/g, "");
+        }
+    }
+    return null;
+}
+
+function resolveGemOsRequirement() {
+    const requested = process.env.GEM_OS_VERSION?.trim();
+    if (requested) {
+        const exact = requested.startsWith("v") ? requested.slice(1) : requested;
+        return { req: `=${exact}`, source: "GEM_OS_VERSION" };
+    }
+
+    const backend = resolveBackendVersion();
+    const req = lookupCompatibleGemOs(backend.key);
+    if (!req) {
+        console.error("ERROR: no compatible GEM OS range found.");
+        console.error(`       gm_mctrl_gem resolved to ${backend.version};`
+            + ` compatibility key ${backend.key}.`);
+        console.error("       Add a matching [[builder]] entry with a `gem_os`"
+            + " constraint to makefile/gem-builder-compat.toml,");
+        console.error("       or set GEM_OS_VERSION to an exact release.");
+        process.exit(1);
+    }
+    return { req, source: `gm_mctrl_gem ${backend.version}` };
+}
+
+// Fail loudly when a kit does not match what was requested, instead of
+// silently finalizing against the wrong GEM OS release. Returns a reason
+// string rather than exiting, so callers can decide whether a bad kit is a
+// fatal user error or merely a cache to discard. `expectedVersion` may be null
+// when the release was chosen by range rather than named up front.
+function checkKit(dir, expectedVersion) {
+    let manifest;
+    try {
+        manifest = JSON.parse(readFileSync(join(dir, "kit.json"), "utf8"));
+    } catch (e) {
+        return `kit.json is unreadable (${e.message})`;
+    }
+    if (manifest.kit_format !== EXPECTED_KIT_FORMAT) {
+        return `kit_format is ${manifest.kit_format}, expected ${EXPECTED_KIT_FORMAT}`
+            + " — update gem-kmod (or the kit) so both sides agree on the manifest schema";
+    }
+    const normalize = (v) => (v.startsWith("v") ? v : `v${v}`);
+    if (expectedVersion && normalize(manifest.gem_os_version) !== normalize(expectedVersion)) {
+        return `kit is for GEM OS ${manifest.gem_os_version}, expected ${expectedVersion}`;
+    }
+    for (const name of ["kit.ko", manifest.linker_script]) {
+        if (!existsSync(join(dir, name))) {
+            return `kit is missing ${name}`;
+        }
+    }
+    return null;
+}
+
+function verifyKitOrExit(dir, expectedVersion) {
+    const reason = checkKit(dir, expectedVersion);
+    if (reason) {
+        console.error(`ERROR: kit at ${dir}: ${reason}.`);
+        process.exit(1);
+    }
+}
+
+function kitVersion(dir) {
+    try {
+        return JSON.parse(readFileSync(join(dir, "kit.json"), "utf8")).gem_os_version;
+    } catch {
+        return "unknown";
+    }
+}
+
+function requireGrab() {
+    if (capture("grab", ["--version"]) !== null) {
+        return;
+    }
+    console.error("ERROR: the grab CLI is not installed.");
+    console.error("");
+    console.error("Windows:");
+    console.error("  irm https://raw.githubusercontent.com/globusmedical/grab/main/scripts/install.ps1 | iex");
+    console.error("Linux/macOS:");
+    console.error("  cargo install --git https://github.com/globusmedical/grab.git grab-cli");
+    console.error("");
+    console.error("Or point GEM_KIT_DIR at an already-extracted kit.");
+    process.exit(1);
+}
+
+function resolveKit() {
+    if (process.env.GEM_KIT_DIR) {
+        const dir = resolve(process.env.GEM_KIT_DIR);
+        if (!existsSync(join(dir, "kit.json"))) {
+            console.error(`ERROR: GEM_KIT_DIR=${dir} does not contain kit.json.`);
+            process.exit(1);
+        }
+        return dir;
+    }
+
+    const { req, source } = resolveGemOsRequirement();
+    const root = join(workspaceDir, "target", "gem-kit");
+    // grab resolves `deploy` relative to the manifest, so both live here.
+    const manifestPath = join(root, "grab.toml");
+    const kitDir = join(root, "kit");
+    const stampPath = join(root, "requirement.txt");
+    const reportPath = join(root, "fetch-report.json");
+
+    const stamp = existsSync(stampPath) ? readFileSync(stampPath, "utf8").trim() : null;
+    const refresh = process.env.GEM_KIT_REFRESH === "1";
+    // A build should not need the network, and should not silently swap the
+    // kernel ABI underneath a developer mid-session. Re-resolve only when the
+    // requirement itself moved, or when explicitly asked to.
+    if (!refresh && stamp === req && existsSync(kitDir)) {
+        const reason = checkKit(kitDir, null);
+        if (!reason) {
+            console.log(`Module kit: GEM OS ${kitVersion(kitDir)} (cached; ${source} needs ${req}).`);
+            return kitDir;
+        }
+        // A truncated deployment must not pin the build to a broken kit
+        // forever: discard and fetch again.
+        console.warn(`Discarding unusable cached kit at ${kitDir}: ${reason}.`);
+    }
+    rmSync(kitDir, { recursive: true, force: true });
+    rmSync(stampPath, { force: true });
+
+    requireGrab();
+    mkdirSync(root, { recursive: true });
+
+    // The manifest is generated rather than committed: the version requirement
+    // it carries is derived from the backend version, and a second committed
+    // copy could only ever drift from it.
+    writeFileSync(manifestPath, [
+        "# Generated by `cargo make gem kmod` — edits are overwritten.",
+        "",
+        "[project]",
+        'name = "gem-module-kit-fetch"',
+        "edition = 1",
+        "",
+        "[defaults]",
+        `registry = "${KIT_REGISTRY}"`,
+        'collection = "kit"',
+        "",
+        `[registry.${KIT_REGISTRY}]`,
+        `url.base = "${KIT_REGISTRY_URL}"`,
+        "",
+        `[registry.${KIT_REGISTRY}.auth.fetch]`,
+        `fqid = "grab:s3:${KIT_REGISTRY}:fetch"`,
+        "",
+        "# Copied, not linked: the kit is handed to a container that only sees",
+        "# this working tree.",
+        "[collections.kit.members]",
+        `${KIT_PACKAGE} = { version = "${req}", deploy = "kit", force_copy = true }`,
+        "",
+    ].join("\n"));
+
+    console.log(`Fetching module kit ${KIT_PACKAGE} ${req} (${source})...`);
+    const fetched = run("grab", [
+        "--manifest-path", manifestPath,
+        `--json=${reportPath}`,
+        "fetch", "--fail-fast",
+    ]) === 0;
+
+    let report = null;
+    try {
+        report = JSON.parse(readFileSync(reportPath, "utf8"));
+    } catch {
+        // No report is itself a failure signal; handled below.
+    }
+
+    if (!fetched) {
+        console.error("ERROR: failed to fetch the module kit.");
+        // grab's own diagnosis is more specific than anything we can infer.
+        for (const failure of report?.failures ?? []) {
+            console.error(`  ${failure.error}`);
+        }
+        console.error("");
+        console.error(`Check that you can reach the ${KIT_REGISTRY} registry`);
+        console.error("(`grab login`), or point GEM_KIT_DIR at an extracted kit");
+        console.error(`downloaded from a ${GEM_OS_REPO} release.`);
+        process.exit(1);
+    }
+
+    // The kit's own manifest is the authority; the report only says what the
+    // registry thought it was serving.
+    verifyKitOrExit(kitDir, report?.packages?.[0]?.version ?? null);
+
+    console.log(`Module kit: GEM OS ${kitVersion(kitDir)}.`);
+    writeFileSync(stampPath, req);
+    return kitDir;
+}
+
+const kitDir = resolveKit();
+
+// The container sees the workspace at /workspace and nothing else, so a kit
+// outside the workspace cannot be handed to it.
+if (resolveOnly) {
+    const rel = relative(workspaceDir, kitDir);
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+        console.error(`ERROR: the module kit at ${kitDir} lies outside the workspace,`);
+        console.error("so the builder container cannot see it.");
+        console.error("Copy it under target/gem-kit/ and point GEM_KIT_DIR at that copy.");
+        process.exit(1);
+    }
+    const stateDir = join(workspaceDir, "target", "cargo-make");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, "gem-kit-dir.txt"), rel.split(sep).join("/"));
+    process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// 3. Finalize.
+// ---------------------------------------------------------------------------
+const extra = (process.env.GEM_DOCKER_EXTRA_ARGS ?? "").split(" ").filter(Boolean);
+const finalizeArgs = ["finalize", "--rt-crate", rtCrate, "--kit", kitDir, ...extra];
+
+const status =
+    kmod.kind === "path"
+        ? run("cargo", [
+              "run", "--quiet", "--manifest-path", join(kmod.location, "Cargo.toml"),
+              "--features", "cli", "--", ...finalizeArgs,
+          ])
+        : run("gem-kmod", finalizeArgs);
+
+process.exit(status);
+'''
+
+[tasks.gem_private_resolve_kit_dir]
+private = true
+description = "Resolve the module kit on the host, for the Docker packaging path"
+env = { "GEM_KIT_RESOLVE_ONLY" = "1" }
+run_task = "gem_private_finalize"
+
 [tasks.gem_private_docker_cargo]
 private = true
 dependencies = ["gem_private_docker_check", "gem_private_resolve_builder", "gem_private_prepare_docker_env"]
@@ -285,32 +673,27 @@ cm_run_task gem_private_run_docker
 '''
 
 [tasks.gem_private_ensure_artifacts]
+# `gem-builder-compat.toml` and `gem-docker-run.sh` are the git-tracked,
+# canonical copies of these files — this task only guards against an
+# accidentally deleted local copy. It intentionally does NOT fetch anything:
+# this repository is where these files live, not a cache of them.
 private = true
 script_runner = "@duckscript"
 script = '''
 workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
 makefile_dir = set "${workspace_dir}/makefile"
-mkdir ${makefile_dir}
 
 compat_file = set "${makefile_dir}/gem-builder-compat.toml"
 helper_file = set "${makefile_dir}/gem-docker-run.sh"
 
 if not is_path_exists ${compat_file}
-    url = set "${GEM_RES_BASE_URL}/gem-builder-compat.toml"
-    result = exec curl -L --fail -o ${compat_file} ${url}
-    if not equals ${result.code} 0
-        echo "ERROR: failed to download ${url}"
-        exit 1
-    end
+    echo "ERROR: ${compat_file} is missing. It is a tracked file, not a download cache; restore it from git (git checkout -- makefile/gem-builder-compat.toml)."
+    exit 1
 end
 
 if not is_path_exists ${helper_file}
-    url = set "${GEM_RES_BASE_URL}/gem-docker-run.sh"
-    result = exec curl -L --fail -o ${helper_file} ${url}
-    if not equals ${result.code} 0
-        echo "ERROR: failed to download ${url}"
-        exit 1
-    end
+    echo "ERROR: ${helper_file} is missing. It is a tracked file, not a download cache; restore it from git (git checkout -- makefile/gem-docker-run.sh)."
+    exit 1
 end
 '''
 
@@ -476,7 +859,7 @@ writefile ${state_file} ${env_file}
 
 [tasks.gem_private_docker_package]
 private = true
-dependencies = ["gem_private_docker_check", "gem_private_resolve_builder", "gem_private_prepare_docker_env"]
+dependencies = ["gem_private_docker_check", "gem_private_resolve_builder", "gem_private_resolve_kit_dir", "gem_private_prepare_docker_env"]
 script_runner = "@duckscript"
 script = '''
 workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
@@ -492,7 +875,13 @@ env_file = readfile "${workspace_dir}/target/cargo-make/gem-env-file.txt"
 env_file = trim ${env_file}
 extra = get_env GEM_DOCKER_EXTRA_ARGS
 
-inner_cmd = set "gem-package ${crate_dir} ${extra}; if [ -f /workspace/makefile/verify-split-rt-package.sh ]; then bash /workspace/makefile/verify-split-rt-package.sh ${crate_dir}; fi"
+# Split-RT packaging finalizes against a module kit (ADR-0008) and has no
+# Kbuild fallback. The kit was resolved on the host into the workspace, which
+# the container sees at /workspace.
+kit_rel = readfile "${workspace_dir}/target/cargo-make/gem-kit-dir.txt"
+kit_rel = trim ${kit_rel}
+
+inner_cmd = set "export GEM_KIT_DIR=/workspace/${kit_rel}; gem-package ${crate_dir} ${extra}; if [ -f /workspace/makefile/verify-split-rt-package.sh ]; then bash /workspace/makefile/verify-split-rt-package.sh ${crate_dir}; fi"
 set_env GEM_DOCKER_IMAGE ${image}
 set_env GEM_DOCKER_ENV_FILE ${env_file}
 set_env GEM_DOCKER_INNER_CMD ${inner_cmd}
@@ -631,23 +1020,42 @@ if not is_empty ${sibling_names_seen}
     for name in ${parts}
         if not is_empty ${name}
             sib_dir = set "${parent_dir}/${name}"
-            if is_directory ${sib_dir}
-                if ${use_wsl}
-                    sib_wsl = exec wsl wslpath -u ${sib_dir}
-                    sib_docker = trim ${sib_wsl.stdout}
-                else
-                    sib_docker = set ${sib_dir}
+            if not is_directory ${sib_dir}
+                echo "ERROR: Cargo path dependency sibling is missing: ${sib_dir}"
+                echo "       Restore the sibling checkout or remove its path dependency before running a GEM task."
+                exit 1
+            end
+            if ${use_wsl}
+                sib_wsl = exec wsl wslpath -u ${sib_dir}
+                if not equals ${sib_wsl.code} 0
+                    echo "ERROR: cannot convert sibling path for WSL Docker: ${sib_dir}"
+                    exit 1
                 end
-                mount = set "${sib_docker}:/${name}"
-                if is_empty ${sibling_mounts}
-                    sibling_mounts = set ${mount}
-                else
-                    sibling_mounts = set "${sibling_mounts}@${mount}"
-                end
+                sib_docker = trim ${sib_wsl.stdout}
+            else
+                sib_docker = set ${sib_dir}
+            end
+            mount = set "${sib_docker}:/${name}"
+            if is_empty ${sibling_mounts}
+                sibling_mounts = set ${mount}
+            else
+                sibling_mounts = set "${sibling_mounts}@${mount}"
             end
         end
     end
     release ${parts}
+end
+
+# Explicit override/addition for sibling mounts.
+# Format: <host_path>:<container_path>@<host_path>:<container_path>
+manual_sibling_mounts = get_env GEM_DOCKER_SIBLINGS
+manual_sibling_mounts = trim ${manual_sibling_mounts}
+if not is_empty ${manual_sibling_mounts}
+    if is_empty ${sibling_mounts}
+        sibling_mounts = set ${manual_sibling_mounts}
+    else
+        sibling_mounts = set "${sibling_mounts}@${manual_sibling_mounts}"
+    end
 end
 
 sibling_mounts_arg = set "${sibling_mounts}"
