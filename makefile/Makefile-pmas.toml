@@ -1,4 +1,3 @@
-
 [env]
 GM_EXT_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/ext"
 GM_MCTRL_ARCHIVE_DIR = "${GM_EXT_DIR}/archives"
@@ -19,6 +18,7 @@ LINUX_TOOLCHAIN_SHA256 = "F49F1A15EC62364EF5E4EDB4E3990C0E1D2D1A54C90153B8F3869D
 
 [tasks.pmas_build]
 dependencies = ["install_toolchain"]
+env = { MAV_MCTRL_BACKEND = "pmas" }
 command = "cargo"
 args = [
     "build",
@@ -30,6 +30,7 @@ args = [
 
 [tasks.pmas_test]
 dependencies = ["install_toolchain"]
+env = { MAV_MCTRL_BACKEND = "pmas" }
 command = "cargo"
 args = [
     "test",
@@ -41,6 +42,7 @@ args = [
 
 [tasks.pmas_clippy]
 dependencies = ["install_toolchain"]
+env = { MAV_MCTRL_BACKEND = "pmas" }
 command = "cargo"
 args = [
     "clippy",
@@ -52,11 +54,13 @@ args = [
 
 [tasks.pmas_clean]
 dependencies = ["install_toolchain"]
+env = { MAV_MCTRL_BACKEND = "pmas" }
 command = "cargo"
 args = ["clean", "--target=${GM_MCTRL_TARGET_ARCH}", "${@}"]
 
 [tasks.pmas_doc]
 dependencies = ["install_toolchain"]
+env = { MAV_MCTRL_BACKEND = "pmas" }
 command = "cargo"
 args = [
     "doc",
@@ -71,6 +75,7 @@ args = [
 description = "Generic PMAS task runner - Usage: cargo make pmas <subcommand> [args]"
 dependencies = ["install_toolchain"]
 workspace = false
+env = { MAV_MCTRL_BACKEND = "pmas" }
 script_runner = "@duckscript"
 script = '''
 # require subcommand
@@ -85,8 +90,9 @@ working_dir = get_env CARGO_MAKE_WORKING_DIRECTORY
 workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
 if equals "${working_dir}" "${workspace_dir}"
     echo "Error: PMAS tasks must be run from a specific crate directory, not workspace root."
-    echo "Hint: cd examples/<crate> then run: cargo make pmas <subcommand> [args]"
-    echo "Example: cd examples/gm_mctrl_ex_split_rt; cargo make pmas build --release --bin gm_mctrl_ex_split_rt"
+    echo "Hint: cd <crate-dir> (where that crate's Cargo.toml lives), then run: cargo make pmas <subcommand> [args]"
+    echo "Example (Maverick): cd bin/rs/mav_mctrl; cargo make pmas build"
+    echo "Example (rs-gm_mctrl): cd examples/gm_mctrl_ex_split_rt; cargo make pmas build --release --bin gm_mctrl_ex_split_rt"
     exit 1
 end
 
@@ -211,29 +217,4 @@ end
 
 # Create response file to indicate success
 write_text_file "${GM_EXT_DIR}/toolchains/${GM_MCTRL_TOOLCHAIN_SHA256}.touch" "Toolchain installed in ${GM_MCTRL_TOOLCHAIN_DIR}"
-'''
-
-[tasks.activate_toolchain_common]
-private = true
-script = '''
-#!@duckscript
-fn get_linker_dir
-    handle = glob_array ${GM_MCTRL_TOOLCHAIN_DIR}/**/${GM_MCTRL_LINKER_NAME}{,.exe}
-    for path in ${handle}
-        release $handle
-        dir = dirname ${path}
-        return ${dir}
-    end
-    release $handle
-    return ""
-end
-
-linker_dir = get_linker_dir
-if not is_empty linker_dir
-    path_old = get_env PATH
-    path_new = concat  "${linker_dir};" ${path_old}
-    set_env PATH ${path_new}
-    set_env CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER ${GM_MCTRL_LINKER_NAME}
-    echo "Toolchain enabled: ${linker_dir}"
-end
 '''
