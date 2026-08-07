@@ -1,3 +1,4 @@
+
 [env]
 GM_EXT_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/ext"
 GM_MCTRL_ARCHIVE_DIR = "${GM_EXT_DIR}/archives"
@@ -18,7 +19,6 @@ LINUX_TOOLCHAIN_SHA256 = "F49F1A15EC62364EF5E4EDB4E3990C0E1D2D1A54C90153B8F3869D
 
 [tasks.pmas_build]
 dependencies = ["install_toolchain"]
-env = { MAV_MCTRL_BACKEND = "pmas" }
 command = "cargo"
 args = [
     "build",
@@ -30,7 +30,6 @@ args = [
 
 [tasks.pmas_test]
 dependencies = ["install_toolchain"]
-env = { MAV_MCTRL_BACKEND = "pmas" }
 command = "cargo"
 args = [
     "test",
@@ -42,7 +41,6 @@ args = [
 
 [tasks.pmas_clippy]
 dependencies = ["install_toolchain"]
-env = { MAV_MCTRL_BACKEND = "pmas" }
 command = "cargo"
 args = [
     "clippy",
@@ -54,13 +52,11 @@ args = [
 
 [tasks.pmas_clean]
 dependencies = ["install_toolchain"]
-env = { MAV_MCTRL_BACKEND = "pmas" }
 command = "cargo"
 args = ["clean", "--target=${GM_MCTRL_TARGET_ARCH}", "${@}"]
 
 [tasks.pmas_doc]
 dependencies = ["install_toolchain"]
-env = { MAV_MCTRL_BACKEND = "pmas" }
 command = "cargo"
 args = [
     "doc",
@@ -75,7 +71,6 @@ args = [
 description = "Generic PMAS task runner - Usage: cargo make pmas <subcommand> [args]"
 dependencies = ["install_toolchain"]
 workspace = false
-env = { MAV_MCTRL_BACKEND = "pmas" }
 script_runner = "@duckscript"
 script = '''
 # require subcommand
@@ -90,9 +85,8 @@ working_dir = get_env CARGO_MAKE_WORKING_DIRECTORY
 workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
 if equals "${working_dir}" "${workspace_dir}"
     echo "Error: PMAS tasks must be run from a specific crate directory, not workspace root."
-    echo "Hint: cd <crate-dir> (where that crate's Cargo.toml lives), then run: cargo make pmas <subcommand> [args]"
-    echo "Example (Maverick): cd bin/rs/mav_mctrl; cargo make pmas build"
-    echo "Example (rs-gm_mctrl): cd examples/gm_mctrl_ex_split_rt; cargo make pmas build --release --bin gm_mctrl_ex_split_rt"
+    echo "Hint: cd examples/<crate> then run: cargo make pmas <subcommand> [args]"
+    echo "Example: cd examples/gm_mctrl_ex_split_rt; cargo make pmas build --release --bin gm_mctrl_ex_split_rt"
     exit 1
 end
 
