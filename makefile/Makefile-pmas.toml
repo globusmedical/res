@@ -212,28 +212,3 @@ end
 # Create response file to indicate success
 write_text_file "${GM_EXT_DIR}/toolchains/${GM_MCTRL_TOOLCHAIN_SHA256}.touch" "Toolchain installed in ${GM_MCTRL_TOOLCHAIN_DIR}"
 '''
-
-[tasks.activate_toolchain_common]
-private = true
-script = '''
-#!@duckscript
-fn get_linker_dir
-    handle = glob_array ${GM_MCTRL_TOOLCHAIN_DIR}/**/${GM_MCTRL_LINKER_NAME}{,.exe}
-    for path in ${handle}
-        release $handle
-        dir = dirname ${path}
-        return ${dir}
-    end
-    release $handle
-    return ""
-end
-
-linker_dir = get_linker_dir
-if not is_empty linker_dir
-    path_old = get_env PATH
-    path_new = concat  "${linker_dir};" ${path_old}
-    set_env PATH ${path_new}
-    set_env CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER ${GM_MCTRL_LINKER_NAME}
-    echo "Toolchain enabled: ${linker_dir}"
-end
-'''
