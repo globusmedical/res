@@ -33,18 +33,28 @@ duckscript never defines, which aborted the script before the download and
 pinned every checkout to its first fetch. Fixing it meant finding and editing
 each copy.
 
-Copies are unavoidable here, but silent copies are not. The bootstrap embeds its
-own `bootstrap_version` and compares it against `pmas-bootstrap.version` on each
-run, so a copy that has fallen behind says so:
+Copies are unavoidable here, but silent copies are not — and a copy that every
+PMAS repository carries should be as small as it can be. The bootstrap does one
+thing: fetch `Makefile-pmas.toml`. Everything else lives in the file it fetches,
+which is downloaded rather than copied and so costs consumers nothing.
+
+That includes the drift check. The bootstrap sets `PMAS_BOOTSTRAP_VERSION`; the
+`check_bootstrap` task in `Makefile-pmas.toml` compares it against the version
+that file expects and warns when a copy has fallen behind:
 
 ```text
-warning: PMAS bootstrap in Makefile.toml is v1; res publishes v2.
+warning: the PMAS bootstrap in Makefile.toml is v1 or older; res publishes v2.
 warning: re-copy makefile/pmas-bootstrap.ds from globusmedical/res into [config] load_script.
 ```
 
-The check is quiet when the fetch fails, so an offline build is never blocked by
-it. This is the same trade the GEM build surface makes above: what cannot stop
-being duplicated should at least be reduced to a version number.
+A bootstrap predating v2 does not set the variable at all, which the check
+reports as `v1 or older`. It warns rather than fails: a stale bootstrap still
+fetches this file correctly, and an offline build must not break on a version
+comparison.
+
+This is the same trade the GEM build surface makes above: what cannot stop being
+duplicated should at least be reduced to a version number — and, here, to ten
+lines.
 
 #### Adding a consumer
 
@@ -64,11 +74,18 @@ Commit the downloaded `makefile/Makefile.toml` as well. It is the fallback when
 the download fails, and committing it makes an upstream change show up as a diff
 rather than as a silent behaviour change.
 
-To sync more than the PMAS task set, add entries to the `files` array as
-`"remote name|local name"` rather than adding a second sync block.
+Note that `load_script` runs only when `cargo make` is invoked from the
+directory holding that `Makefile.toml`. A repository whose crates each carry
+their own loader refreshes per crate; one where crates `extend` the downloaded
+file directly never refreshes from those directories at all, and the committed
+copy is what those builds use.
 
 #### Changing the bootstrap
 
-Edit `makefile/pmas-bootstrap.ds`, bump `bootstrap_version` inside it, and set
-`makefile/pmas-bootstrap.version` to match. Every consumer still on the old
-version starts warning on its next build; none of them break.
+Edit `makefile/pmas-bootstrap.ds`, bump the version it sets, and set both
+`makefile/pmas-bootstrap.version` and `expected` in the `check_bootstrap` task
+to match. Every consumer still on the old version starts warning on its next
+build; none of them break.
+
+`pmas-bootstrap.version` exists only for bootstraps predating v2, which fetch it
+directly. Keep it in step so those copies still report themselves.

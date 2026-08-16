@@ -136,7 +136,31 @@ exec --fail-on-error cargo %{args_line}
 '''
 
 [tasks.install_toolchain]
-dependencies = ["fetch_toolchain", "activate_toolchain"]
+dependencies = ["check_bootstrap", "fetch_toolchain", "activate_toolchain"]
+
+# Drift check for the bootstrap block each consumer embeds in its root
+# `Makefile.toml`. It lives here, not in the bootstrap: this file is downloaded,
+# so carrying the check costs the copies nothing. `PMAS_BOOTSTRAP_VERSION` is
+# set by the bootstrap itself; an empty value means a copy predating v2.
+#
+# Warn only. A stale bootstrap still fetches this file correctly, so blocking
+# the build would be disproportionate -- and an offline build must not fail on a
+# version comparison.
+[tasks.check_bootstrap]
+private = true
+script_runner = "@duckscript"
+script = '''
+expected = set "2"
+found = set "${PMAS_BOOTSTRAP_VERSION}"
+# A bootstrap older than v2 does not set the variable at all.
+if is_empty ${found}
+    found = set "1 or older"
+end
+if not equals ${found} ${expected}
+    echo "warning: the PMAS bootstrap in Makefile.toml is v${found}; res publishes v${expected}."
+    echo "warning: re-copy makefile/pmas-bootstrap.ds from globusmedical/res into [config] load_script."
+end
+'''
 
 [tasks.fetch_toolchain.windows]
 private = true
