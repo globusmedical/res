@@ -7,4 +7,5 @@ dir = set "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 etag = set "${dir}/target/cargo-make/pmas.etag"
 mkdir ${dir}/makefile
 mkdir ${dir}/target/cargo-make
+touch ${etag}
 exec curl -m 10 --fail --etag-compare "${etag}" --etag-save "${etag}" -L "https://github.com/globusmedical/res/raw/refs/heads/main/makefile/Makefile-pmas.toml" -o "${dir}/makefile/Makefile.toml"
