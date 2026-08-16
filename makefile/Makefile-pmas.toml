@@ -87,8 +87,8 @@ working_dir = get_env CARGO_MAKE_WORKING_DIRECTORY
 workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
 if equals "${working_dir}" "${workspace_dir}"
     echo "Error: PMAS tasks must be run from a specific crate directory, not workspace root."
-    echo "Hint: cd examples/<crate> then run: cargo make pmas <subcommand> [args]"
-    echo "Example: cd examples/gm_mctrl_ex_split_rt; cargo make pmas build --release --bin gm_mctrl_ex_split_rt"
+    echo "Hint: cd to the crate's directory, then run: cargo make pmas <subcommand> [args]"
+    echo "Example: cd <path/to/crate>; cargo make pmas build --release --bin <name>"
     exit 1
 end
 
