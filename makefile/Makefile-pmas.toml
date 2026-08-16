@@ -5,6 +5,19 @@ GM_MCTRL_ARCHIVE_DIR = "${GM_EXT_DIR}/archives"
 GM_MCTRL_RES_DIR = "${GM_EXT_DIR}/res"
 GM_MCTRL_TARGET_ARCH = "armv7-unknown-linux-musleabihf"
 
+# Cargo features the PMAS tasks enable. Every crate in rs-gm_mctrl selects its
+# motion-control backend with `elmo`, so that stays the default.
+#
+# A consuming crate that has no backend -- a benchmark, a standalone utility --
+# overrides this to an empty string in its own `Makefile.toml` `[env]` block:
+#
+#     [env]
+#     GM_MCTRL_PMAS_FEATURES = ""
+#
+# Before this was configurable such a crate had to declare a stub `elmo = []`
+# feature purely to satisfy the task runner.
+GM_MCTRL_PMAS_FEATURES = "elmo"
+
 WIN_TOOLCHAIN_DIR = "armv7l-unknown-linux-musleabihf"
 WIN_TOOLCHAIN_NAME = "armv7l-unknown-linux-musleabihf"
 WIN_LINKER_NAME = "armv7l-unknown-linux-musleabihf-gcc"
@@ -25,7 +38,7 @@ command = "cargo"
 args = [
     "build",
     "--target=${GM_MCTRL_TARGET_ARCH}",
-    "--features=elmo",
+    "--features=${GM_MCTRL_PMAS_FEATURES}",
     "--no-default-features",
     "${@}",
 ]
@@ -36,7 +49,7 @@ command = "cargo"
 args = [
     "test",
     "--target=${GM_MCTRL_TARGET_ARCH}",
-    "--features=elmo",
+    "--features=${GM_MCTRL_PMAS_FEATURES}",
     "--no-default-features",
     "${@}",
 ]
@@ -47,7 +60,7 @@ command = "cargo"
 args = [
     "clippy",
     "--target=${GM_MCTRL_TARGET_ARCH}",
-    "--features=elmo",
+    "--features=${GM_MCTRL_PMAS_FEATURES}",
     "--no-default-features",
     "${@}",
 ]
@@ -63,7 +76,7 @@ command = "cargo"
 args = [
     "doc",
     "--target=${GM_MCTRL_TARGET_ARCH}",
-    "--features=elmo",
+    "--features=${GM_MCTRL_PMAS_FEATURES}",
     "--no-default-features",
     "--no-deps",
     "${@}",
@@ -97,7 +110,7 @@ cargo_subcommand = array_get ${@} 0
 array_remove ${@} 0
 
 # default args to prepend if not already present
-default_args_set = set_new "--target=${GM_MCTRL_TARGET_ARCH}" "--features=elmo" "--no-default-features"
+default_args_set = set_new "--target=${GM_MCTRL_TARGET_ARCH}" "--features=${GM_MCTRL_PMAS_FEATURES}" "--no-default-features"
 
 # now iterate over remaining args, and remove those present in the default set from the default set
 for a in ${@}
