@@ -1,0 +1,69 @@
+#!@duckscript
+# PMAS bootstrap v1.
+#
+# Canonical copy: globusmedical/res, makefile/pmas-bootstrap.ds.
+#
+# This block cannot be downloaded before it runs -- it is the thing that does
+# the downloading -- so every consumer repository embeds a copy by hand, inside
+# `[config] load_script` in its root `Makefile.toml`. Keep the copy identical to
+# this file. `bootstrap_version` is checked against the version res publishes,
+# so a copy that falls behind reports itself instead of drifting silently.
+bootstrap_version = set "1"
+
+base_url = set "https://github.com/globusmedical/res/raw/refs/heads/main/makefile"
+outdir = set "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/makefile"
+etag_dir = set "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target/cargo-make"
+
+# Files to sync, each as "remote name|local name". Most repositories need only
+# the PMAS task set; add entries here rather than adding a second sync block.
+files = array "Makefile-pmas.toml|Makefile.toml"
+
+# Freshness is left to curl's conditional request: `--etag-compare` sends
+# If-None-Match, and an unchanged file comes back as a bodiless 304 that leaves
+# the local copy untouched.
+#
+# Do not put an age-based short circuit in front of this. The one that used to
+# be here read `${current_time}`, which duckscript does not define, so `calc`
+# failed on an empty operand and aborted the script before any download -- for
+# every invocation that found a cache file, at any age. The effect was the
+# opposite of a cache with a TTL: a checkout stayed pinned to whatever it
+# fetched first until someone deleted the cache by hand.
+mkdir ${outdir}
+mkdir ${etag_dir}
+
+for entry in ${files}
+    parts = split ${entry} "|"
+    remote = set ""
+    local = set ""
+    part_index = set 0
+    for part in ${parts}
+        if equals ${part_index} 0
+            remote = set ${part}
+        elseif equals ${part_index} 1
+            local = set ${part}
+        end
+        part_index = calc ${part_index} + 1
+    end
+    release ${parts}
+    etag = set "${etag_dir}/${local}.etag"
+    # A failed download (offline, res unreachable) leaves the committed copy in
+    # `makefile/` untouched, and the `extend` directive falls back to it.
+    result = exec curl -m 10 --fail --etag-compare "${etag}" --etag-save "${etag}" -L "${base_url}/${remote}" -o "${outdir}/${local}"
+end
+release ${files}
+
+# Drift check. Compares the embedded `bootstrap_version` against the version res
+# publishes and warns when this copy is behind. Stays quiet when the fetch fails,
+# so an offline build is never blocked by it.
+version_file = set "${etag_dir}/pmas-bootstrap.version"
+version_etag = set "${version_file}.etag"
+result = exec curl -m 10 --fail --etag-compare "${version_etag}" --etag-save "${version_etag}" -L "${base_url}/pmas-bootstrap.version" -o "${version_file}"
+if is_path_exists ${version_file}
+    upstream_raw = readfile ${version_file}
+    upstream = trim ${upstream_raw}
+    current = equals ${upstream} ${bootstrap_version}
+    if not ${current}
+        echo "warning: PMAS bootstrap in Makefile.toml is v${bootstrap_version}; res publishes v${upstream}."
+        echo "warning: re-copy makefile/pmas-bootstrap.ds from globusmedical/res into [config] load_script."
+    end
+end
