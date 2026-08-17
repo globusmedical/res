@@ -47,10 +47,16 @@ warning: the PMAS bootstrap in Makefile.toml is v1 or older; res publishes v2.
 warning: re-copy makefile/pmas-bootstrap.ds from globusmedical/res into [config] load_script.
 ```
 
-A bootstrap predating v2 does not set the variable at all, which the check
-reports as `v1 or older`. It warns rather than fails: a stale bootstrap still
-fetches this file correctly, and an offline build must not break on a version
-comparison.
+The check is silent when the variable is unset, which is not the same as out of
+date. It means either a bootstrap predating v2 — those carry their own check
+against `pmas-bootstrap.version` and already report themselves — or a crate
+whose makefile chain reaches the task set without passing through a bootstrap,
+as `rs-gm_mctrl`'s examples do. Nothing has drifted in that second case; the
+variable simply cannot be observed from there, and warning would cry wolf on a
+correct configuration every build.
+
+It warns rather than fails: a stale bootstrap still fetches this file correctly,
+and an offline build must not break on a version comparison.
 
 This is the same trade the GEM build surface makes above: what cannot stop being
 duplicated should at least be reduced to a version number — and, here, to ten
