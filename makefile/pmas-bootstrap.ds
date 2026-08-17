@@ -1,8 +1,7 @@
 #!@duckscript
-# PMAS bootstrap v2. Canonical text: globusmedical/res, makefile/pmas-bootstrap.ds.
-# Copy verbatim into `[config] load_script`; the task set it fetches warns when
-# this copy falls behind. Rationale and options: res/README.md.
-set_env PMAS_BOOTSTRAP_VERSION 2
+# PMAS bootstrap v3. Canonical: globusmedical/res makefile/pmas-bootstrap.ds.
+# Copy verbatim. Details: res/README.md.
+set_env PMAS_BOOTSTRAP_VERSION 3
 dir = set "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 etag = set "${dir}/target/cargo-make/pmas.etag"
 mkdir ${dir}/makefile

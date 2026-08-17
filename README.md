@@ -25,38 +25,22 @@ consumer runs from `[config] load_script` in its root `Makefile.toml`.
 `makefile/pmas-bootstrap.ds` is the canonical text of that block, and
 `makefile/pmas-bootstrap.version` is the version it currently stands at.
 
-That block is the one thing a consumer cannot download from here, because it is
-what does the downloading. So it is copied by hand, and the usual consequence
-followed: four copies across `maverick` and `rs-gm_mctrl` drifted, and all four
-carried the same defect — an age check reading a `${current_time}` that
-duckscript never defines, which aborted the script before the download and
-pinned every checkout to its first fetch. Fixing it meant finding and editing
-each copy.
+A consumer cannot download this block, because it is what does the downloading.
+So it is copied by hand — which means it must stay small, and it must announce
+when it goes stale. It does one thing, fetch `Makefile-pmas.toml`; everything
+else lives in the file it fetches, which is downloaded rather than copied.
 
-Copies are unavoidable here, but silent copies are not — and a copy that every
-PMAS repository carries should be as small as it can be. The bootstrap does one
-thing: fetch `Makefile-pmas.toml`. Everything else lives in the file it fetches,
-which is downloaded rather than copied and so costs consumers nothing.
-
-That includes the drift check. The bootstrap sets `PMAS_BOOTSTRAP_VERSION`; the
-`check_bootstrap` task in `Makefile-pmas.toml` compares it against the version
-that file expects and warns when a copy has fallen behind:
+That includes the drift check. The bootstrap sets `PMAS_BOOTSTRAP_VERSION`, and
+`check_bootstrap` in `Makefile-pmas.toml` compares it:
 
 ```text
-warning: the PMAS bootstrap in Makefile.toml is v1 or older; res publishes v2.
+warning: the PMAS bootstrap in Makefile.toml is v2; res publishes v3.
 warning: re-copy makefile/pmas-bootstrap.ds from globusmedical/res into [config] load_script.
 ```
 
-The check is silent when the variable is unset, which is not the same as out of
-date. It means either a bootstrap predating v2 — those carry their own check
-against `pmas-bootstrap.version` and already report themselves — or a crate
-whose makefile chain reaches the task set without passing through a bootstrap,
-as `rs-gm_mctrl`'s examples do. Nothing has drifted in that second case; the
-variable simply cannot be observed from there, and warning would cry wolf on a
-correct configuration every build.
-
-It warns rather than fails: a stale bootstrap still fetches this file correctly,
-and an offline build must not break on a version comparison.
+Unset is silent, not stale — either a pre-v2 bootstrap, which self-reports, or a
+crate whose makefile chain has no bootstrap. It warns rather than fails, so an
+offline build is never blocked.
 
 This is the same trade the GEM build surface makes above: what cannot stop being
 duplicated should at least be reduced to a version number — and, here, to ten
@@ -76,15 +60,12 @@ load_script = '''
 '''
 ```
 
-Commit the downloaded `makefile/Makefile.toml` as well. It is the fallback when
-the download fails, and committing it makes an upstream change show up as a diff
-rather than as a silent behaviour change.
+Commit the downloaded `makefile/Makefile.toml` too — it is the offline fallback,
+and committing it turns an upstream change into a reviewable diff.
 
-Note that `load_script` runs only when `cargo make` is invoked from the
-directory holding that `Makefile.toml`. A repository whose crates each carry
-their own loader refreshes per crate; one where crates `extend` the downloaded
-file directly never refreshes from those directories at all, and the committed
-copy is what those builds use.
+`load_script` runs only from the directory holding that `Makefile.toml`. Crates
+that `extend` the downloaded file directly never refresh it, so the committed
+copy is what their builds use.
 
 #### Changing the bootstrap
 
