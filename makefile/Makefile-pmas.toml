@@ -138,32 +138,16 @@ exec --fail-on-error cargo %{args_line}
 [tasks.install_toolchain]
 dependencies = ["check_bootstrap", "fetch_toolchain", "activate_toolchain"]
 
-# Drift check for the bootstrap block each consumer embeds in its
-# `Makefile.toml`. It lives here, not in the bootstrap: this file is downloaded,
-# so carrying the check costs the copies nothing.
+# Drift check for the copied bootstrap. Lives here because this file is
+# downloaded, so it costs the copies nothing.
 #
-# Silent when `PMAS_BOOTSTRAP_VERSION` is unset, which is not the same as
-# out of date. It means one of two things, and neither is ours to report:
-#
-#   - A bootstrap predating v2. Those carry their own check against
-#     `pmas-bootstrap.version` and already report themselves, so warning here
-#     would only duplicate it.
-#   - A crate whose makefile chain reaches this file without passing through a
-#     bootstrap at all -- `rs-gm_mctrl`'s examples extend the downloaded task
-#     set directly, so `load_script` never runs from their directories. Nothing
-#     has drifted; the variable simply cannot be observed from there.
-#
-# Treating unset as stale made every build in that second case warn, on every
-# CI run, about a bootstrap that was in fact current. A check that cries wolf
-# on a correct configuration is worse than no check.
-#
-# Warn, never fail. A stale bootstrap still fetches this file correctly, and an
-# offline build must not break on a version comparison.
+# Unset is silent, not stale: either a pre-v2 bootstrap, which self-reports, or
+# a crate whose makefile chain has no bootstrap. Warn, never fail.
 [tasks.check_bootstrap]
 private = true
 script_runner = "@duckscript"
 script = '''
-expected = set "2"
+expected = set "3"
 found = set "${PMAS_BOOTSTRAP_VERSION}"
 if not is_empty ${found}
     if not equals ${found} ${expected}
