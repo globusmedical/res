@@ -1,0 +1,142 @@
+# PMAS task set for glibc, target armv7-unknown-linux-gnueabihf.
+#
+# Opt-in. `Makefile-pmas.toml` remains the default and still targets static
+# musl. Load this one instead when you want a dynamically linked glibc build:
+# to run `LD_PRELOAD`, `perf`, or `gdbserver` against the Elmo SDK, or to trade
+# mimalloc's throughput for a lower worst-case cycle and a smaller resident set.
+# Numbers behind that trade: globusmedical/rs-gm_mctrl#141.
+#
+# What makes this possible is a sysroot rather than a compiler. The one in
+# `gm/armv7l-linux-gnueabihf-sysroot` carries glibc 2.24, inside the 2.17 to
+# 2.25 window that Rust and the controller set between them. Linking uses
+# `rust-lld`, which ships with every Rust toolchain, so no host C compiler is
+# needed for a pure-Rust build and the same sysroot serves Windows and Linux.
+#
+# Crates that build C need a cross compiler as well; see the note on
+# `GM_MCTRL_GLIBC_CC` below.
+
+[env]
+GM_EXT_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/ext"
+GM_MCTRL_ARCHIVE_DIR = "${GM_EXT_DIR}/archives"
+GM_MCTRL_TARGET_ARCH = "armv7-unknown-linux-gnueabihf"
+GM_MCTRL_PMAS_FEATURES = "elmo"
+
+SYSROOT_DIR = "armv7l-linux-gnueabihf-sysroot"
+SYSROOT_NAME = "armv7l-linux-gnueabihf-sysroot"
+SYSROOT_URL = "https://github.com/globusmedical/res/raw/refs/heads/main/gm/armv7l-linux-gnueabihf-sysroot/armv7l-linux-gnueabihf-sysroot.tgz"
+SYSROOT_SHA256 = "99B727853855D00148B1C9C8D8D224B3F3C71EDAF80BFE78DB665FC4668B3F20"
+
+# A cross C compiler, for crates that build C sources. Unset by default, because
+# a pure-Rust build does not need one. Point it at an `arm-linux-gnueabihf-gcc`
+# whose sysroot is glibc 2.25 or older; `docker/glibc-sysroot/Dockerfile` in res
+# provides one.
+GM_MCTRL_GLIBC_CC = { value = "", condition = { env_not_set = ["GM_MCTRL_GLIBC_CC"] } }
+
+[tasks.pmas_glibc]
+description = "Generic glibc PMAS task runner - Usage: cargo make pmas_glibc <subcommand> [args]"
+dependencies = ["install_glibc_sysroot"]
+workspace = false
+script_runner = "@duckscript"
+script = '''
+if array_is_empty ${@}
+    echo "Error: pmas_glibc requires at least one argument (cargo subcommand)"
+    exit 1
+end
+
+working_dir = get_env CARGO_MAKE_WORKING_DIRECTORY
+workspace_dir = get_env CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY
+if equals "${working_dir}" "${workspace_dir}"
+    echo "Error: PMAS tasks must be run from a specific crate directory, not workspace root."
+    exit 1
+end
+
+cargo_subcommand = array_get ${@} 0
+array_remove ${@} 0
+
+final = array ${cargo_subcommand}
+array_push ${final} "--target=${GM_MCTRL_TARGET_ARCH}"
+array_push ${final} "--features=${GM_MCTRL_PMAS_FEATURES}"
+array_push ${final} "--no-default-features"
+for a in ${@}
+  array_push ${final} ${a}
+end
+
+args_line = array_join ${final} " "
+exec --fail-on-error cargo %{args_line}
+'''
+
+[tasks.install_glibc_sysroot]
+dependencies = ["fetch_glibc_sysroot", "activate_glibc_sysroot"]
+
+[tasks.fetch_glibc_sysroot]
+private = true
+condition.files_not_exist = ["${GM_EXT_DIR}/toolchains/${SYSROOT_SHA256}.touch"]
+condition.fail_message = "(already downloaded)"
+script = '''
+#!@duckscript
+if is_path_exists "${GM_EXT_DIR}/toolchains/${SYSROOT_SHA256}.touch"
+    exit 0
+end
+
+echo "Installing glibc sysroot in ${GM_EXT_DIR}/toolchains/${SYSROOT_DIR}..."
+target_path = set "${GM_MCTRL_ARCHIVE_DIR}/${SYSROOT_NAME}.tgz"
+
+mkdir "${GM_MCTRL_ARCHIVE_DIR}"
+mkdir "${GM_EXT_DIR}/toolchains"
+
+rm -f "${target_path}"
+result = exec curl -L -o "${target_path}" "${SYSROOT_URL}"
+if not equals "${result.code}" 0
+    echo "Failed to download sysroot from: ${SYSROOT_URL}"
+    exit 1
+end
+
+hash = digest --algo sha256 --file "${target_path}"
+if not equals "${hash}" "${SYSROOT_SHA256}"
+    echo "SHA-256 checksum mismatch: ${hash} != ${SYSROOT_SHA256}"
+    exit 1
+end
+
+result = exec tar -xf "${target_path}" -C "${GM_EXT_DIR}/toolchains"
+if not equals "${result.code}" 0
+    echo "Failed to extract archive: ${target_path}"
+    exit 1
+end
+
+write_text_file "${GM_EXT_DIR}/toolchains/${SYSROOT_SHA256}.touch" "Sysroot installed"
+'''
+
+# Rust links this target through a C compiler driver by default. `rust-lld`
+# replaces it, which is why no host compiler is required, but it means the crt
+# objects and libgcc have to be named explicitly: the driver would normally add
+# them. `Scrt1.o` and the `S` variants of crtbegin and crtend are the
+# position-independent ones, and Rust builds this target as PIE.
+[tasks.activate_glibc_sysroot]
+private = true
+script = '''
+#!@duckscript
+sysroot = set "${GM_EXT_DIR}/toolchains/${SYSROOT_DIR}"
+lld = exec --fail-on-error rustc --print target-libdir
+libdir = trim ${lld.stdout}
+rustc_sysroot = exec --fail-on-error rustc --print sysroot
+rs = trim ${rustc_sysroot.stdout}
+
+flags = set "-Clinker-flavor=ld.lld"
+flags = concat ${flags} " -Clink-arg=-L${sysroot}/lib"
+flags = concat ${flags} " -Clink-arg=-dynamic-linker=/lib/ld-linux-armhf.so.3"
+flags = concat ${flags} " -Clink-arg=${sysroot}/lib/Scrt1.o"
+flags = concat ${flags} " -Clink-arg=${sysroot}/lib/crti.o"
+flags = concat ${flags} " -Clink-arg=${sysroot}/lib/crtbeginS.o"
+flags = concat ${flags} " -Clink-arg=${sysroot}/lib/crtendS.o"
+flags = concat ${flags} " -Clink-arg=${sysroot}/lib/crtn.o"
+flags = concat ${flags} " -Clink-arg=-lgcc"
+
+set_env CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER "${rs}/lib/rustlib/${CARGO_MAKE_RUST_TARGET_TRIPLE}/bin/rust-lld"
+set_env CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUSTFLAGS ${flags}
+
+cc = get_env GM_MCTRL_GLIBC_CC
+if not is_empty ${cc}
+    set_env CC_armv7_unknown_linux_gnueabihf ${cc}
+    set_env CFLAGS_armv7_unknown_linux_gnueabihf "--sysroot=${sysroot}"
+end
+'''

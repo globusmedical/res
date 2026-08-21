@@ -1,0 +1,103 @@
+# glibc sysroot for the PMAS
+
+`gm/armv7l-linux-gnueabihf-sysroot/armv7l-linux-gnueabihf-sysroot.tgz` lets you
+build `armv7-unknown-linux-gnueabihf` for the ELMO PMAS. It is 6.7 MB, and it
+contains no compiler.
+
+## Why a sysroot and not a toolchain
+
+Rust links this target through a C compiler driver by default, but `rust-lld`
+ships with every Rust toolchain and can do the job directly. Given a sysroot, a
+pure-Rust build needs no host C compiler at all, and the same sysroot works on
+Windows and on Linux. That is why this is 6.7 MB rather than the several hundred
+a cross toolchain costs.
+
+Crates that build C sources still need a cross compiler. Set `GM_MCTRL_GLIBC_CC`
+to one whose sysroot is glibc 2.25 or older; the Dockerfile here provides one.
+
+## The version window
+
+The sysroot must carry glibc **2.17 through 2.25**.
+
+| Bound | Set by |
+| --- | --- |
+| 2.16 or newer | Rust 1.78 calls `libc::getauxval` in `stack_overflow.rs` |
+| 2.17 or newer | Rust's minimum for `armv7-unknown-linux-gnueabihf` |
+| 2.25 or older | The controller runs glibc 2.25, and a dynamic binary needs the target's glibc to be at least as new as the build sysroot |
+
+Nothing in the Elmo SDK narrows the window. `libMMC_APP_LIB.so` requires at most
+`GLIBC_2.4` and `libEIP.so` at most `GLIBC_2.7`, and a symbol version
+requirement is a floor rather than a cap.
+
+Debian 9 sits at glibc 2.24 and needs no configuration, which is what the
+Dockerfile uses. Debian 12 does not work: glibc 2.34 merged `libpthread` into
+`libc`, so a binary built there requires `GLIBC_2.34` and the controller cannot
+run it. `gcc-linaro-arm-linux-gnu-4.7.3`, elsewhere in this repository, does not
+work either: its sysroot is glibc 2.15, below the floor, and it ships no `cc1`.
+
+## Rebuilding
+
+```sh
+sh docker/glibc-sysroot/build.sh
+```
+
+This regenerates the tarball and its checksum. Update `SYSROOT_SHA256` in
+`makefile/Makefile-pmas-glibc.toml` afterwards.
+
+The build dereferences every symlink, because Windows cannot create symlinks
+without elevated privileges and `tar` aborts the whole extraction when it tries.
+It also rewrites `libc.so`, `libpthread.so`, and `libm.so`, which Debian ships
+as `ld` scripts holding absolute paths that do not survive relocation.
+
+## Using it
+
+```toml
+extend = "makefile/Makefile.toml"   # fetched from Makefile-pmas-glibc.toml
+```
+
+```sh
+cargo make pmas_glibc build --release
+```
+
+Verify what a result requires before deploying it:
+
+```sh
+readelf -V <binary> | grep -o 'GLIBC_[0-9.]*' | sort -uV
+```
+
+A correct build reports nothing above `GLIBC_2.18`.
+
+## When to prefer this over the musl task set
+
+Static musl with mimalloc remains the default, and it should. Measured over
+300,000 cycles at 1 kHz, both meet the deadline with zero missed cycles, and
+mimalloc is faster at every percentile:
+
+| | glibc `ptmalloc2` | musl mimalloc |
+| --- | --- | --- |
+| Missed cycles | 0 / 300,000 | 0 / 300,000 |
+| p50 | 9,922 ns | 7,971 ns |
+| p99 | 12,851 ns | 10,411 ns |
+| p99.9 | 14,640 ns | 11,550 ns |
+| Slowest | 83,611 ns | 87,840 ns |
+| Allocator ops | 243M | 356M |
+| Pss | 9.4 MB | 21.3 MB |
+
+The slowest cycle is a tie. Over 60,000 cycles glibc looked much better on that
+column, 13,502 ns against 28,466 ns, but the gap closed at 300,000 and the rare
+outlier is system noise rather than the allocator. Don't reach for glibc on
+worst-case grounds.
+
+glibc's one real advantage is memory: 12 MB less Pss, on a controller with
+1.7 GB free.
+
+So this sysroot is not an alternative to mimalloc, and it isn't meant to be.
+Reach for it when you need something musl cannot give you:
+
+- `LD_PRELOAD`, `perf`, or `gdbserver` against the Elmo SDK, none of which work
+  against a statically linked binary. This is the main one: it is what makes the
+  SDK's own allocation behaviour measurable at all.
+- A build that does not depend on musl being the only thing that compiles.
+- Memory headroom, if a future controller is tighter than this one.
+
+Full numbers: globusmedical/rs-gm_mctrl#141.
