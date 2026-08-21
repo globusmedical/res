@@ -69,18 +69,35 @@ A correct build reports nothing above `GLIBC_2.18`.
 
 ## When to prefer this over the musl task set
 
-Static musl with mimalloc remains the default, and both meet the 1 kHz deadline
-with zero missed cycles. Reach for glibc when you need one of these:
+Static musl with mimalloc remains the default, and it should. Measured over
+300,000 cycles at 1 kHz, both meet the deadline with zero missed cycles, and
+mimalloc is faster at every percentile:
+
+| | glibc `ptmalloc2` | musl mimalloc |
+| --- | --- | --- |
+| Missed cycles | 0 / 300,000 | 0 / 300,000 |
+| p50 | 9,922 ns | 7,971 ns |
+| p99 | 12,851 ns | 10,411 ns |
+| p99.9 | 14,640 ns | 11,550 ns |
+| Slowest | 83,611 ns | 87,840 ns |
+| Allocator ops | 243M | 356M |
+| Pss | 9.4 MB | 21.3 MB |
+
+The slowest cycle is a tie. Over 60,000 cycles glibc looked much better on that
+column, 13,502 ns against 28,466 ns, but the gap closed at 300,000 and the rare
+outlier is system noise rather than the allocator. Don't reach for glibc on
+worst-case grounds.
+
+glibc's one real advantage is memory: 12 MB less Pss, on a controller with
+1.7 GB free.
+
+So this sysroot is not an alternative to mimalloc, and it isn't meant to be.
+Reach for it when you need something musl cannot give you:
 
 - `LD_PRELOAD`, `perf`, or `gdbserver` against the Elmo SDK, none of which work
-  against a statically linked musl binary.
-- A lower worst-case cycle. Measured over 60,000 cycles, glibc's slowest was
-  13,502 ns against mimalloc's 28,466 ns.
-- A smaller resident set. glibc measured 7.6 MB of Pss against mimalloc's
-  17.2 MB, and 1.5 MB against 13.2 MB without `mlockall`.
-
-Stay on musl when you want a binary that does not depend on any individual
-controller's glibc version, or when allocator throughput matters: mimalloc
-completed about 43% more operations than `ptmalloc2` in the same runs.
+  against a statically linked binary. This is the main one: it is what makes the
+  SDK's own allocation behaviour measurable at all.
+- A build that does not depend on musl being the only thing that compiles.
+- Memory headroom, if a future controller is tighter than this one.
 
 Full numbers: globusmedical/rs-gm_mctrl#141.
