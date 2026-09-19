@@ -16,7 +16,20 @@ GM_MCTRL_TARGET_ARCH = "armv7-unknown-linux-musleabihf"
 #
 # Before this was configurable such a crate had to declare a stub `elmo = []`
 # feature purely to satisfy the task runner.
-GM_MCTRL_PMAS_FEATURES = "elmo"
+#
+# `env_not_set` makes the value below a default rather than an override, so a
+# one-off build can add a feature from the environment:
+#
+#     GM_MCTRL_PMAS_FEATURES=elmo,diagnostics cargo make pmas build --release
+#
+# A plain `GM_MCTRL_PMAS_FEATURES = "elmo"` wins over the process environment,
+# which silently drops anything added that way: the build succeeds, the feature
+# is simply absent. That cost a bench session on rs-gm_mctrl#70, where the SDO
+# register dump kept printing its "built without the diagnostics feature"
+# fallback while the environment plainly asked for it.
+GM_MCTRL_PMAS_FEATURES = { value = "elmo", condition = { env_not_set = [
+    "GM_MCTRL_PMAS_FEATURES",
+] } }
 
 WIN_TOOLCHAIN_DIR = "armv7l-unknown-linux-musleabihf"
 WIN_TOOLCHAIN_NAME = "armv7l-unknown-linux-musleabihf"
