@@ -1,0 +1,200 @@
+name: Publish PMAS toolchains
+
+# Publishes the PMAS cross-toolchains from this repository to the
+# soup-archives registry, so consumers can `grab fetch` them instead of
+# pulling a 58 MB or 98 MB archive from a raw GitHub LFS URL over curl with no
+# retry and no cache.
+#
+# This runs on Linux for a reason that is not incidental. The Linux toolchain
+# archive contains symlinks, including an absolute /lib/libc.so and a
+# self-referential usr -> . . Windows cannot materialise those, so a repack
+# from a Windows host silently produces a broken toolchain. Publishing from a
+# Linux runner is the only way to get that archive into the registry intact,
+# and running both toolchains through the same job keeps their provenance
+# identical rather than half-published from somebody's laptop.
+#
+# Manual by design: the toolchains change perhaps once a year, and a publish
+# writes to a shared registry. Promotion from staging to production is a
+# separate credential and stays a separate deliberate act.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Package version. These are vendored third-party toolchains with no
+          upstream version string of their own, so the convention is the
+          publication date, YYYY.MM.DD.
+        required: true
+        type: string
+      toolchains:
+        description: Which toolchains to publish.
+        required: true
+        default: both
+        type: choice
+        options: [both, windows, linux]
+      force:
+        description: >-
+          Overwrite an existing revision of this name and version. Off by
+          default, so a re-run cannot quietly replace a published package.
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: publish-toolchains
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # hush2 authenticates CI through GitHub Actions OIDC. Without this the
+      # runner falls back to GITHUB_TOKEN, which cannot satisfy the registry.
+      id-token: write
+
+    env:
+      # Passed through the environment rather than interpolated into the run
+      # scripts, so a workflow input can never be read as shell.
+      VERSION: ${{ inputs.version }}
+      TOOLCHAINS: ${{ inputs.toolchains }}
+      REGISTRY: soup-archives
+
+    steps:
+      - name: Check out with LFS
+        uses: actions/checkout@v4
+        with:
+          # The archives are LFS objects. Without this the working tree holds
+          # pointer files and the publish would ship a few hundred bytes.
+          lfs: true
+
+      - name: Verify the archives are real, not LFS pointers
+        run: |
+          set -euo pipefail
+          check() {
+            if [[ "$(head -c 40 "$1")" == version\ https://git-lfs* ]]; then
+              echo "::error::$1 is an LFS pointer, not the archive. LFS checkout failed."
+              exit 1
+            fi
+            echo "$1: $(stat -c %s "$1") bytes"
+          }
+          case "$TOOLCHAINS" in
+            both|windows) check gm/x86_64-w64-mingw32_to_arm-unknown-linux-musleabihf/x86_64-w64-mingw32_to_armv7l-unknown-linux-musleabihf.zip ;;
+          esac
+          case "$TOOLCHAINS" in
+            both|linux) check gm/armv7l-linux-musleabihf-cross/armv7l-linux-musleabihf-cross.tgz ;;
+          esac
+
+      - name: Install grab
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_REPO_ACCESS }}
+        run: |
+          set -euo pipefail
+          # The newest CLI release inside major 1, matching what a consumer
+          # bootstraps. grab publishes other tag families, so the pattern is
+          # anchored on grab-cli/v.
+          TAG="$(gh release list --repo globusmedical/grab --limit 100 \
+            --json tagName,isDraft,isPrerelease \
+            --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' \
+            | grep -E '^grab-cli/v1\.[0-9]+\.[0-9]+$' \
+            | sed 's|grab-cli/v||' \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+            | tail -1)"
+          [[ -n "$TAG" ]] || { echo "::error::No grab 1.x CLI release found"; exit 1; }
+          echo "Installing grab $TAG"
+          gh release download "grab-cli/v${TAG}" --repo globusmedical/grab \
+            --pattern '*x86_64-unknown-linux-gnu*' --dir /tmp/grab-dl
+          ARCHIVE="$(find /tmp/grab-dl -type f | head -1)"
+          mkdir -p /tmp/grab-unpacked
+          case "$ARCHIVE" in
+            *.tar.gz|*.tgz) tar -xzf "$ARCHIVE" -C /tmp/grab-unpacked ;;
+            *.zip)          unzip -q "$ARCHIVE" -d /tmp/grab-unpacked ;;
+            *)              cp "$ARCHIVE" /tmp/grab-unpacked/grab ;;
+          esac
+          BIN="$(find /tmp/grab-unpacked -type f -name grab | head -1)"
+          sudo install -m 0755 "$BIN" /usr/local/bin/grab
+          grab --version
+
+      - name: Import and publish the Windows toolchain
+        if: ${{ inputs.toolchains == 'both' || inputs.toolchains == 'windows' }}
+        run: |
+          set -euo pipefail
+          SRC=gm/x86_64-w64-mingw32_to_arm-unknown-linux-musleabihf/x86_64-w64-mingw32_to_armv7l-unknown-linux-musleabihf.zip
+          SHA="$(sha256sum "$SRC" | cut -d' ' -f1)"
+          # No --keep-root: the archive already contains its own top-level
+          # directory, and wrapping it again produces a double-nested package
+          # that deploys to the wrong path.
+          grab import "pmas-toolchain-windows@${VERSION}" --source "$SRC" \
+            --description 'PMAS cross-toolchain, Windows x86_64 host to armv7-unknown-linux-musleabihf (GCC 13.2.0, musl)' \
+            --origin third-party \
+            --license 'GPL-3.0-or-later WITH GCC-exception-3.1' \
+            --tag pmas --tag toolchain --tag cross-compiler \
+            --tag armv7 --tag musl --tag windows-host \
+            --notes "Cross-compiler toolchain for the Elmo Platinum Maestro (P-MAS), which runs armv7 musl.
+
+          - compiler: GCC 13.2.0, built with crosstool-NG 1.26.0
+          - host: Windows x86_64 (built as mingw-w64)
+          - target: armv7l-linux-musleabihf
+
+          Provenance: repacked without modification from globusmedical/res, ${SRC}, sha256 ${SHA}.
+          That sha256 is the value pinned as WIN_TOOLCHAIN_SHA256 by the PMAS build tasks, so this
+          package is provably the same toolchain those builds already used.
+
+          Licensing: the bundle is a GCC toolchain. GCC and binutils are GPL-3.0-or-later (GCC with
+          the Runtime Library Exception); the bundled musl libc is MIT. The single SPDX field names
+          the compiler license and is not a complete statement of every component.
+
+          Archive layout: one top-level directory, armv7l-unknown-linux-musleabihf/, with bin/
+          beneath it. Consumers add that bin/ to PATH."
+          grab publish "pmas-toolchain-windows@${VERSION}" --registry "$REGISTRY" \
+            ${{ inputs.force && '--force' || '' }}
+
+      - name: Import and publish the Linux toolchain
+        if: ${{ inputs.toolchains == 'both' || inputs.toolchains == 'linux' }}
+        run: |
+          set -euo pipefail
+          SRC=gm/armv7l-linux-musleabihf-cross/armv7l-linux-musleabihf-cross.tgz
+          SHA="$(sha256sum "$SRC" | cut -d' ' -f1)"
+          # grab imports a directory or a .7z/.zip, not a .tgz, so this is
+          # extracted first. Extraction must happen here rather than on a
+          # developer machine: the tree contains symlinks that only survive on
+          # a POSIX filesystem.
+          mkdir -p /tmp/tc-linux
+          tar -xzf "$SRC" -C /tmp/tc-linux
+          echo "symlinks preserved: $(find /tmp/tc-linux -type l | wc -l)"
+          test "$(find /tmp/tc-linux -type l | wc -l)" -gt 0 \
+            || { echo "::error::No symlinks survived extraction; refusing to publish a broken toolchain"; exit 1; }
+          # --keep-root because the source here is a directory whose single
+          # child is the toolchain root; keeping it matches the layout the
+          # Windows package and the old `tar -xf` both produce.
+          grab import "pmas-toolchain-linux@${VERSION}" --source /tmp/tc-linux/armv7l-linux-musleabihf-cross --keep-root \
+            --description 'PMAS cross-toolchain, Linux x86_64 host to armv7-unknown-linux-musleabihf (musl)' \
+            --origin third-party \
+            --license 'GPL-3.0-or-later WITH GCC-exception-3.1' \
+            --tag pmas --tag toolchain --tag cross-compiler \
+            --tag armv7 --tag musl --tag linux-host \
+            --notes "Cross-compiler toolchain for the Elmo Platinum Maestro (P-MAS), which runs armv7 musl.
+
+          - host: Linux x86_64
+          - target: armv7l-linux-musleabihf
+
+          Provenance: repacked from globusmedical/res, ${SRC}, sha256 ${SHA}. That sha256 is the
+          value pinned as LINUX_TOOLCHAIN_SHA256 by the PMAS build tasks, so this package is
+          provably the same toolchain those builds already used.
+
+          Packed on Linux deliberately: the tree contains symlinks, including an absolute
+          /lib/libc.so and a self-referential usr -> . , which a Windows host cannot materialise.
+
+          Licensing: the bundle is a GCC toolchain. GCC and binutils are GPL-3.0-or-later (GCC with
+          the Runtime Library Exception); the bundled musl libc is MIT. The single SPDX field names
+          the compiler license and is not a complete statement of every component.
+
+          Archive layout: one top-level directory, armv7l-linux-musleabihf-cross/, with bin/
+          beneath it. Consumers add that bin/ to PATH."
+          grab publish "pmas-toolchain-linux@${VERSION}" --registry "$REGISTRY" \
+            ${{ inputs.force && '--force' || '' }}
+
+      - name: Report what is in staging
+        run: grab search pmas-toolchain --scope registries --registry "$REGISTRY" --channel staging
