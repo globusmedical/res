@@ -1,0 +1,41 @@
+#:schema https://globusmedical.github.io/schemas/grab/grab.toml.v1.schema.json
+
+# grab configuration for this repository.
+#
+# The PMAS cross-toolchains are published from here to the `soup-archives`
+# registry, which is where the other PMAS artifacts already live (PMAS,
+# PMASGIS, QJsonRPC_Elmo_PMAS, Qt_Elmo_PMAS).
+#
+# Consumers do not read this file. `makefile/Makefile-pmas.toml` writes its own
+# throwaway manifest at build time and fetches through that, because it is
+# downloaded into the consumer tree rather than copied, and a consumer that had
+# to vendor a second file by hand would defeat the point of the bootstrap.
+#
+# Publishing writes to the registry's staging channel; promotion to production
+# is a separate credential and a separate deliberate step.
+
+[project]
+name = "res"
+edition = 1
+
+[defaults]
+registry = "soup-archives"
+collection = "toolchains"
+
+[registry.soup-archives]
+url.base = "s3://globus-soup-archives"
+
+[registry.soup-archives.auth.fetch]
+fqid = "grab:s3:soup-archives:fetch"
+
+[registry.soup-archives.auth.publish]
+fqid = "grab:s3:soup-archives:publish"
+
+[registry.soup-archives.auth.promote]
+fqid = "grab:s3:soup-archives:promote"
+
+# Host-selected: a build machine fetches exactly one of these. Both target
+# armv7-unknown-linux-musleabihf, which is what the P-MAS runs.
+[collections.toolchains.members]
+pmas-toolchain-windows = { version = "*", deploy = "ext/toolchains" }
+pmas-toolchain-linux = { version = "*", deploy = "ext/toolchains" }
