@@ -18,19 +18,39 @@ GM_MCTRL_TARGET_ARCH = "armv7-unknown-linux-musleabihf"
 # feature purely to satisfy the task runner.
 GM_MCTRL_PMAS_FEATURES = "elmo"
 
+# The cross-toolchains are grab packages in the soup-archives registry. They
+# used to be a 58 MB and a 98 MB curl from a raw GitHub LFS URL with no retry
+# and no shared cache, which failed often enough to block work. grab retries,
+# verifies, and caches content-addressed across every checkout on the machine,
+# so the second consumer on a host pays nothing.
+#
+# One version covers both, because they are published together and only make
+# sense as a matched pair.
+PMAS_TOOLCHAIN_VERSION = "2026.09.19"
+PMAS_TOOLCHAIN_REGISTRY = "soup-archives"
+
+# The grab CLI is pinned so every consumer resolves the toolchain with the same
+# fetcher, in the spirit of the other pins in this tree. Bumping it is a
+# deliberate act. A grab already on PATH is used in preference, and GM_MCTRL_GRAB
+# overrides both.
+GRAB_VERSION = "1.0.4"
+GRAB_REPO = "globusmedical/grab"
+
 WIN_TOOLCHAIN_DIR = "armv7l-unknown-linux-musleabihf"
 WIN_TOOLCHAIN_NAME = "armv7l-unknown-linux-musleabihf"
 WIN_LINKER_NAME = "armv7l-unknown-linux-musleabihf-gcc"
 WIN_AR_NAME = "armv7l-unknown-linux-musleabihf-ar"
-WIN_TOOLCHAIN_URL = "https://github.com/globusmedical/res/raw/refs/heads/main/gm/x86_64-w64-mingw32_to_arm-unknown-linux-musleabihf/x86_64-w64-mingw32_to_armv7l-unknown-linux-musleabihf.zip"
-WIN_TOOLCHAIN_SHA256 = "779EA385CF283E1F118EFBD7D922082CEAF890141275E4B8915641F50D773EF0"
+WIN_TOOLCHAIN_PACKAGE = "pmas-toolchain-windows"
+WIN_GRAB_ASSET = "grab-${GRAB_VERSION}-x86_64-pc-windows-msvc.zip"
+WIN_GRAB_EXE = "grab.exe"
 
 LINUX_TOOLCHAIN_DIR = "armv7l-linux-musleabihf-cross"
 LINUX_TOOLCHAIN_NAME = "armv7l-linux-musleabihf-cross"
 LINUX_LINKER_NAME = "armv7l-linux-musleabihf-gcc"
 LINUX_AR_NAME = "armv7l-linux-musleabihf-ar"
-LINUX_TOOLCHAIN_URL = "https://github.com/globusmedical/res/raw/refs/heads/main/gm/armv7l-linux-musleabihf-cross/armv7l-linux-musleabihf-cross.tgz"
-LINUX_TOOLCHAIN_SHA256 = "F49F1A15EC62364EF5E4EDB4E3990C0E1D2D1A54C90153B8F3869DAD63328A10"
+LINUX_TOOLCHAIN_PACKAGE = "pmas-toolchain-linux"
+LINUX_GRAB_ASSET = "grab-${GRAB_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+LINUX_GRAB_EXE = "grab"
 
 [tasks.pmas_build]
 dependencies = ["install_toolchain"]
@@ -162,16 +182,18 @@ private = true
 extend = "fetch_toolchain_common"
 env.GM_MCTRL_TOOLCHAIN_DIR = "${GM_EXT_DIR}/toolchains/${WIN_TOOLCHAIN_DIR}"
 env.GM_MCTRL_TOOLCHAIN_NAME = "${WIN_TOOLCHAIN_NAME}"
-env.GM_MCTRL_TOOLCHAIN_URL = "${WIN_TOOLCHAIN_URL}"
-env.GM_MCTRL_TOOLCHAIN_SHA256 = "${WIN_TOOLCHAIN_SHA256}"
+env.GM_MCTRL_TOOLCHAIN_PACKAGE = "${WIN_TOOLCHAIN_PACKAGE}"
+env.GM_MCTRL_GRAB_ASSET = "${WIN_GRAB_ASSET}"
+env.GM_MCTRL_GRAB_EXE = "${WIN_GRAB_EXE}"
 
 [tasks.fetch_toolchain.linux]
 private = true
 extend = "fetch_toolchain_common"
 env.GM_MCTRL_TOOLCHAIN_DIR = "${GM_EXT_DIR}/toolchains/${LINUX_TOOLCHAIN_DIR}"
 env.GM_MCTRL_TOOLCHAIN_NAME = "${LINUX_TOOLCHAIN_NAME}"
-env.GM_MCTRL_TOOLCHAIN_URL = "${LINUX_TOOLCHAIN_URL}"
-env.GM_MCTRL_TOOLCHAIN_SHA256 = "${LINUX_TOOLCHAIN_SHA256}"
+env.GM_MCTRL_TOOLCHAIN_PACKAGE = "${LINUX_TOOLCHAIN_PACKAGE}"
+env.GM_MCTRL_GRAB_ASSET = "${LINUX_GRAB_ASSET}"
+env.GM_MCTRL_GRAB_EXE = "${LINUX_GRAB_EXE}"
 
 
 # `CC_*`/`AR_*` are read by the `cc` crate, which builds the C sources of crates
@@ -212,48 +234,81 @@ set_env AR_armv7_unknown_linux_musleabihf ${GM_MCTRL_AR_NAME}
 [tasks.fetch_toolchain_common]
 private = true
 condition.files_not_exist = [
-    "${GM_EXT_DIR}/toolchains/${GM_MCTRL_TOOLCHAIN_SHA256}.touch",
+    "${GM_EXT_DIR}/toolchains/${GM_MCTRL_TOOLCHAIN_PACKAGE}-${PMAS_TOOLCHAIN_VERSION}.touch",
 ]
 condition.fail_message = "(already downloaded)"
 script = '''
 #!@duckscript
-# Double check if toolchain is already installed
-if is_path_exists "${GM_EXT_DIR}/toolchains/${GM_MCTRL_TOOLCHAIN_SHA256}.touch"
+# The sentinel names the package and version rather than a checksum: grab
+# verifies content itself, and a version reads as something a person can
+# compare against the registry.
+touch_file = set "${GM_EXT_DIR}/toolchains/${GM_MCTRL_TOOLCHAIN_PACKAGE}-${PMAS_TOOLCHAIN_VERSION}.touch"
+if is_path_exists ${touch_file}
     exit 0
 end
 
+toolchains_dir = set "${GM_EXT_DIR}/toolchains"
+mkdir ${toolchains_dir}
+
+# --- resolve a grab ----------------------------------------------------------
+# GM_MCTRL_GRAB wins, then one already on PATH, then a pinned copy this task
+# downloads into ext/tools. A consumer that already bootstraps grab for other
+# reasons hands it over instead of paying for a second one.
+grab_bin = get_env GM_MCTRL_GRAB
+if is_empty ${grab_bin}
+    probe = exec grab --version
+    if equals "${probe.code}" 0
+        grab_bin = set "grab"
+    end
+end
+if is_empty ${grab_bin}
+    grab_dir = set "${GM_EXT_DIR}/tools/grab-${GRAB_VERSION}"
+    grab_bin = set "${grab_dir}/${GM_MCTRL_GRAB_EXE}"
+    if not is_path_exists ${grab_bin}
+        echo "Fetching grab ${GRAB_VERSION}..."
+        mkdir ${grab_dir}
+        # The grab CLI lives in a private repository, so this goes through the
+        # GitHub CLI and the developer's existing login rather than a bare
+        # curl. In CI, GH_TOKEN covers it.
+        result = exec gh release download "grab-cli/v${GRAB_VERSION}" --repo ${GRAB_REPO} --pattern ${GM_MCTRL_GRAB_ASSET} --dir ${grab_dir} --clobber
+        if not equals "${result.code}" 0
+            echo "Failed to download ${GM_MCTRL_GRAB_ASSET} from ${GRAB_REPO}."
+            echo "Install the GitHub CLI and run `gh auth login`, or put grab on PATH, or set GM_MCTRL_GRAB to one."
+            echo "${result.stderr}"
+            exit 1
+        end
+        # bsdtar reads both the .zip and the .tar.gz asset, and the binary sits
+        # at the archive root.
+        result = exec tar -xf "${grab_dir}/${GM_MCTRL_GRAB_ASSET}" -C ${grab_dir}
+        if not equals "${result.code}" 0
+            echo "Failed to unpack ${GM_MCTRL_GRAB_ASSET}"
+            exit 1
+        end
+    end
+end
+
+# --- fetch the toolchain -----------------------------------------------------
+# The manifest is generated rather than vendored. This file is downloaded into
+# a consumer tree, so a second file the consumer had to copy by hand would
+# defeat the point of the bootstrap.
+manifest = set "${toolchains_dir}/grab.toml"
+write_text_file ${manifest} "[project]\nname = \"pmas-toolchains\"\nedition = 1\n\n[defaults]\nregistry = \"${PMAS_TOOLCHAIN_REGISTRY}\"\ncollection = \"toolchains\"\n\n[registry.${PMAS_TOOLCHAIN_REGISTRY}]\nurl.base = \"s3://globus-${PMAS_TOOLCHAIN_REGISTRY}\"\n\n[registry.${PMAS_TOOLCHAIN_REGISTRY}.auth.fetch]\nfqid = \"grab:s3:${PMAS_TOOLCHAIN_REGISTRY}:fetch\"\n\n[collections.toolchains.members]\n${GM_MCTRL_TOOLCHAIN_PACKAGE} = { version = \"${PMAS_TOOLCHAIN_VERSION}\", deploy = \".\" }\n"
+
 echo "Installing toolchain in ${GM_MCTRL_TOOLCHAIN_DIR}..."
-target_path = set "${GM_MCTRL_ARCHIVE_DIR}/${GM_MCTRL_TOOLCHAIN_NAME}.zip"
-
-# Create directories if they don't exist
-mkdir "${GM_MCTRL_ARCHIVE_DIR}"
-mkdir "${GM_MCTRL_TOOLCHAIN_DIR}"
-
-# Download toolchain
-rm -f "${target_path}"
-result = exec curl -L -o "${target_path}" "${GM_MCTRL_TOOLCHAIN_URL}"
+result = exec ${grab_bin} --manifest-path ${manifest} fetch
 if not equals "${result.code}" 0
-    echo "Failed to download archive toolchain from: ${GM_MCTRL_TOOLCHAIN_URL}"
+    echo "grab fetch failed for ${GM_MCTRL_TOOLCHAIN_PACKAGE}@${PMAS_TOOLCHAIN_VERSION}."
+    echo "${result.stdout}"
+    echo "${result.stderr}"
     exit 1
 end
 
-# Calculate SHA-256 checksum
-hash = digest --algo sha256 --file "${target_path}"
-if not equals "${hash}" "${GM_MCTRL_TOOLCHAIN_SHA256}"
-    echo "SHA-256 checksum mismatch: ${hash} != ${GM_MCTRL_TOOLCHAIN_SHA256}"
+# grab reports success even when it resolved nothing, so check the compiler is
+# actually where the activate step will look for it.
+if not is_path_exists "${GM_MCTRL_TOOLCHAIN_DIR}/bin"
+    echo "grab reported success but ${GM_MCTRL_TOOLCHAIN_DIR}/bin is missing."
     exit 1
 end
 
-# Write checksum to "${target_path}.sha256"
-write_text_file "${target_path}.sha256" "${hash}"
-
-# Expand archive (using tar command)
-result = exec tar -xf "${target_path}" -C "${GM_EXT_DIR}/toolchains"
-if not equals "${result.code}" 0
-    echo "Failed to extract archive: ${target_path}"
-    exit 1
-end
-
-# Create response file to indicate success
-write_text_file "${GM_EXT_DIR}/toolchains/${GM_MCTRL_TOOLCHAIN_SHA256}.touch" "Toolchain installed in ${GM_MCTRL_TOOLCHAIN_DIR}"
+write_text_file ${touch_file} "${GM_MCTRL_TOOLCHAIN_PACKAGE}@${PMAS_TOOLCHAIN_VERSION} installed in ${GM_MCTRL_TOOLCHAIN_DIR}"
 '''
