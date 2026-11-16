@@ -31,6 +31,6 @@ RUN curl -sSfLk -O https://ftp.gnu.org/gnu/gcc/gcc-4.1.0/gcc-4.1.0.tar.bz2 \
     | sha256sum -c -
 
 COPY patches /src/patches
-COPY materialize.py build-in-container.sh /src/
+COPY materialize.py build-in-container.sh longpath.c /src/
 
 WORKDIR /work

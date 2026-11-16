@@ -15,7 +15,7 @@ BUILD=x86_64-pc-linux-gnu
 PREFIX=/opt/crosstool/gcc-4.1.0-glibc-2.3.6/$TARGET
 SYSROOT=$PREFIX/$TARGET
 ORIG=/orig/opt/crosstool/gcc-4.1.0-glibc-2.3.6/$TARGET
-PKG_NAME=${PKG_NAME:-gmas-cc-linux-ppc_4.1.0-gm002}
+PKG_NAME=${PKG_NAME:-gmas-cc-linux-ppc_4.1.0-gm003}
 JOBS=${JOBS:-$(nproc)}
 W=/work
 STAGE2=$W/stage2-root
@@ -81,8 +81,20 @@ if ! stage gcc-linux; then
 fi
 
 # Stage 2: the same sources hosted on Win32. Statically linked so the package
-# carries no MinGW runtime DLLs.
-MINGW_ENV="CC=$HOST-gcc CXX=$HOST-g++ AR=$HOST-ar RANLIB=$HOST-ranlib CC_FOR_BUILD=gcc LDFLAGS=-static"
+# carries no MinGW runtime DLLs, and with longpath.o, which lifts msvcrt's
+# MAX_PATH limit on file names (see longpath.c). The 2.13-era top-level
+# configure scripts drop LDFLAGS, and passing it to make also reaches the
+# build-machine programs, so a compiler wrapper adds both to host links only.
+LONGPATH_O=$W/longpath.o
+$HOST-gcc -O2 -Wall -Werror -c /src/longpath.c -o $LONGPATH_O
+mkdir -p $W/bin
+cat > $W/bin/$HOST-gcc-lp <<EOF
+#!/bin/sh
+for a; do case \$a in -c|-S|-E) exec $HOST-gcc "\$@" ;; esac; done
+exec $HOST-gcc "\$@" -static $LONGPATH_O
+EOF
+chmod +x $W/bin/$HOST-gcc-lp
+MINGW_ENV="CC=$W/bin/$HOST-gcc-lp CXX=$HOST-g++ AR=$HOST-ar RANLIB=$HOST-ranlib CC_FOR_BUILD=gcc"
 
 if ! stage binutils-win; then
     rm -rf $W/b-binutils-win && mkdir -p $W/b-binutils-win && cd $W/b-binutils-win
@@ -133,6 +145,9 @@ if find $DEST -type f \( -name '*.exe' -o -name '*.dll' \) -exec file {} + | gre
     echo "non-Win32 host binaries in the package"; exit 1
 fi
 if grep -rlI --include='*.exe' cygwin1.dll $DEST; then echo "cygwin1.dll referenced"; exit 1; fi
+for f in $(find $DEST -name '*.exe'); do
+    grep -q gmas-longpath "$f" || { echo "$f lacks longpath.o"; exit 1; }
+done
 test "$(find $DEST -type l | wc -l)" -eq 0 || { echo "symlinks remain"; exit 1; }
 
 cat > /out/$PKG_NAME/cpp-env.json <<'EOF'

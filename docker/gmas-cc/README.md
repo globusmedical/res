@@ -1,6 +1,6 @@
 # GMAS cross compiler without Cygwin
 
-`gmas-cc-linux-ppc_4.1.0-gm002` is the ELMO GMAS cross compiler (gcc 4.1.0,
+`gmas-cc-linux-ppc_4.1.0-gm003` is the ELMO GMAS cross compiler (gcc 4.1.0,
 binutils 2.16.1, glibc 2.3.6, target `powerpc-603e-linux-gnu`) built as
 native, statically linked Win32 programs. It needs no Cygwin and no
 `cygwin1.dll`, and it is a drop-in replacement for `gm001`.
@@ -25,7 +25,7 @@ sh docker/gmas-cc/build.sh <path-to-gmas-cc-linux-ppc_4.1.0-gm001>
 
 The argument is the root of the `gm001` package, the folder holding
 `cpp-env.json` and `opt/`. The build takes about 20 minutes and writes the
-package tree, `gmas-cc-linux-ppc_4.1.0-gm002.tar.gz`, and its SHA-256 into
+package tree, `gmas-cc-linux-ppc_4.1.0-gm003.tar.gz`, and its SHA-256 into
 `out/`.
 
 Stage results are kept in the `gmas-cc-work` Docker volume, so a failed build
@@ -63,6 +63,23 @@ hung compiler processes is needed.
 | `*/…-expandargv` | `@file` response files in the gcc driver, `as`, `ld` and `ar`. CMake uses them to link GMAS executables. Backported from libiberty |
 | `gcc-4.1.0/gcc-4.1-mingw-dir-eacces` | Windows reports `EACCES` when opening a directory. Without this, `#include <string>` fails in any include path holding a `String` directory. Backported from gcc 4.3 |
 | `*/…-host-qsort` | Uses newlib's `qsort` from Cygwin 1.7.1 instead of msvcrt's |
+
+## Long paths
+
+msvcrt's file functions reject paths of 260 characters or more, which Cygwin
+accepted. gcc 4.1 reaches its headers as
+`<prefix>/bin/../lib/gcc/powerpc-603e-linux-gnu/4.1.0/../../../../include/c++/...`,
+so the limit is hit as soon as the package sits in a deep folder such as a
+grab store. `gm002` fails there with `bits/c++config.h: No such file or
+directory`.
+
+`longpath.c` is linked into every host program. At startup it redirects the
+program's msvcrt imports of `open`, `fopen`, `stat`, `access`, `unlink`,
+`rename` and the other path functions. Paths shorter than 248 characters are
+passed through unchanged. Longer ones are made absolute and their `.` and `..`
+components collapsed, as Windows does itself; if that is still too long, the
+wide-character function is called with a `\\?\` path. No registry setting
+or manifest is needed.
 
 ### Why the compiler needs Cygwin's `qsort`
 
