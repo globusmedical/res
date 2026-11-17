@@ -2,8 +2,17 @@ This repository hosts *non-proprietary* binary resources
 
 ## `makefile/`
 
-`makefile/Makefile-pmas.toml` is PMAS cross-compilation tooling. It is the
-only build-task file left here.
+`makefile/Makefile-pmas.toml` is PMAS cross-compilation tooling, targeting
+static musl. It is the default.
+
+`makefile/Makefile-pmas-glibc.toml` is the same thing for
+`armv7-unknown-linux-gnueabihf`, and it is opt-in. It exists so musl is a choice
+rather than the only thing that builds, and so `LD_PRELOAD`, `perf`, and
+`gdbserver` work against the Elmo SDK, none of which they do against a static
+musl binary. It needs no compiler: `rust-lld` links a pure-Rust build directly
+against the 6.7 MB sysroot in `gm/armv7l-linux-gnueabihf-sysroot/`, on Windows
+and on Linux alike. See `docker/glibc-sysroot/README.md` for the version window
+that sysroot has to sit in, and for when to prefer it.
 
 The GEM build-task set that used to live alongside it
 (`Makefile-gem.toml`, `gem-builder-compat.toml`, `gem-docker-run.sh`) is gone.

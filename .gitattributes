@@ -8,3 +8,7 @@
 # file is parsed by the copy, so neither should pick up CRLF on checkout.
 makefile/pmas-bootstrap.ds text eol=lf
 makefile/pmas-bootstrap.version text eol=lf
+
+# Both run inside a Linux container, where CRLF breaks the shebang line.
+docker/glibc-sysroot/build.sh text eol=lf
+docker/glibc-sysroot/Dockerfile text eol=lf
