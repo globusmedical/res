@@ -56,4 +56,4 @@ sha256sum "$OUT/armv7l-linux-gnueabihf-sysroot.tgz" \
 
 echo "Wrote $OUT/armv7l-linux-gnueabihf-sysroot.tgz"
 echo "SHA256: $(cat "$OUT/armv7l-linux-gnueabihf-sysroot.tgz.sha256")"
-echo "Update LINUX_SYSROOT_SHA256 and WIN_SYSROOT_SHA256 in makefile/Makefile-pmas-glibc.toml."
+echo "Update SYSROOT_SHA256 in makefile/Makefile-pmas-glibc.toml."

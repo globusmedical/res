@@ -1,10 +1,10 @@
 # PMAS task set for glibc, target armv7-unknown-linux-gnueabihf.
 #
 # Opt-in. `Makefile-pmas.toml` remains the default and still targets static
-# musl. Load this one instead when you want a dynamically linked glibc build:
-# to run `LD_PRELOAD`, `perf`, or `gdbserver` against the Elmo SDK, or to trade
-# mimalloc's throughput for a lower worst-case cycle and a smaller resident set.
-# Numbers behind that trade: globusmedical/rs-gm_mctrl#141.
+# musl. Load this one instead when you want a dynamically linked glibc build,
+# to run `LD_PRELOAD`, `perf`, or `gdbserver` against the Elmo SDK. It is not a
+# faster allocator: mimalloc wins at every percentile, and glibc's only measured
+# advantage is a smaller resident set. Numbers: globusmedical/rs-gm_mctrl#141.
 #
 # What makes this possible is a sysroot rather than a compiler. The one in
 # `gm/armv7l-linux-gnueabihf-sysroot` carries glibc 2.24, inside the 2.17 to
@@ -19,7 +19,14 @@
 GM_EXT_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/ext"
 GM_MCTRL_ARCHIVE_DIR = "${GM_EXT_DIR}/archives"
 GM_MCTRL_TARGET_ARCH = "armv7-unknown-linux-gnueabihf"
-GM_MCTRL_PMAS_FEATURES = "elmo"
+# A default, not an override, as in `Makefile-pmas.toml`: a plain value would
+# win over the process environment and silently drop features added there.
+GM_MCTRL_PMAS_FEATURES = { value = "elmo", condition = { env_not_set = [
+    "GM_MCTRL_PMAS_FEATURES",
+] } }
+
+# ASCII unit separator, the delimiter `CARGO_ENCODED_RUSTFLAGS` splits on.
+GM_MCTRL_US = "\u001F"
 
 SYSROOT_DIR = "armv7l-linux-gnueabihf-sysroot"
 SYSROOT_NAME = "armv7l-linux-gnueabihf-sysroot"
@@ -68,13 +75,18 @@ exec --fail-on-error cargo %{args_line}
 [tasks.install_glibc_sysroot]
 dependencies = ["fetch_glibc_sysroot", "activate_glibc_sysroot"]
 
+# The marker lives inside the sysroot directory, so deleting the directory also
+# deletes the marker. A new `SYSROOT_SHA256` removes the old directory before
+# extracting: `tar` overwrites files but never deletes the ones the new archive
+# dropped, and the marker would then certify a tree that is not the hashed one.
 [tasks.fetch_glibc_sysroot]
 private = true
-condition.files_not_exist = ["${GM_EXT_DIR}/toolchains/${SYSROOT_SHA256}.touch"]
+condition.files_not_exist = ["${GM_EXT_DIR}/toolchains/${SYSROOT_DIR}/.sha256-${SYSROOT_SHA256}"]
 condition.fail_message = "(already downloaded)"
 script = '''
 #!@duckscript
-if is_path_exists "${GM_EXT_DIR}/toolchains/${SYSROOT_SHA256}.touch"
+marker = set "${GM_EXT_DIR}/toolchains/${SYSROOT_DIR}/.sha256-${SYSROOT_SHA256}"
+if is_path_exists "${marker}"
     exit 0
 end
 
@@ -97,13 +109,14 @@ if not equals "${hash}" "${SYSROOT_SHA256}"
     exit 1
 end
 
+rm -r "${GM_EXT_DIR}/toolchains/${SYSROOT_DIR}"
 result = exec tar -xf "${target_path}" -C "${GM_EXT_DIR}/toolchains"
 if not equals "${result.code}" 0
     echo "Failed to extract archive: ${target_path}"
     exit 1
 end
 
-write_text_file "${GM_EXT_DIR}/toolchains/${SYSROOT_SHA256}.touch" "Sysroot installed"
+write_text_file "${marker}" "Sysroot installed"
 '''
 
 # Rust links this target through a C compiler driver by default. `rust-lld`
@@ -111,28 +124,34 @@ write_text_file "${GM_EXT_DIR}/toolchains/${SYSROOT_SHA256}.touch" "Sysroot inst
 # objects and libgcc have to be named explicitly: the driver would normally add
 # them. `Scrt1.o` and the `S` variants of crtbegin and crtend are the
 # position-independent ones, and Rust builds this target as PIE.
+#
+# The flags go through `CARGO_ENCODED_RUSTFLAGS`, split on the unit separator,
+# because the space-split `RUSTFLAGS` forms break every sysroot path in a
+# checkout whose path contains a space. Cargo prefers the encoded form over
+# `RUSTFLAGS` and `target.<triple>.rustflags`, so those are ignored for these
+# builds. Every `pmas_glibc` build passes `--target`, so the flags reach only
+# target artifacts, not build scripts or proc macros.
 [tasks.activate_glibc_sysroot]
 private = true
 script = '''
 #!@duckscript
 sysroot = set "${GM_EXT_DIR}/toolchains/${SYSROOT_DIR}"
-lld = exec --fail-on-error rustc --print target-libdir
-libdir = trim ${lld.stdout}
 rustc_sysroot = exec --fail-on-error rustc --print sysroot
 rs = trim ${rustc_sysroot.stdout}
 
-flags = set "-Clinker-flavor=ld.lld"
-flags = concat ${flags} " -Clink-arg=-L${sysroot}/lib"
-flags = concat ${flags} " -Clink-arg=-dynamic-linker=/lib/ld-linux-armhf.so.3"
-flags = concat ${flags} " -Clink-arg=${sysroot}/lib/Scrt1.o"
-flags = concat ${flags} " -Clink-arg=${sysroot}/lib/crti.o"
-flags = concat ${flags} " -Clink-arg=${sysroot}/lib/crtbeginS.o"
-flags = concat ${flags} " -Clink-arg=${sysroot}/lib/crtendS.o"
-flags = concat ${flags} " -Clink-arg=${sysroot}/lib/crtn.o"
-flags = concat ${flags} " -Clink-arg=-lgcc"
+flags = array "-Clinker-flavor=ld.lld"
+array_push ${flags} "-Clink-arg=-L${sysroot}/lib"
+array_push ${flags} "-Clink-arg=-dynamic-linker=/lib/ld-linux-armhf.so.3"
+array_push ${flags} "-Clink-arg=${sysroot}/lib/Scrt1.o"
+array_push ${flags} "-Clink-arg=${sysroot}/lib/crti.o"
+array_push ${flags} "-Clink-arg=${sysroot}/lib/crtbeginS.o"
+array_push ${flags} "-Clink-arg=${sysroot}/lib/crtendS.o"
+array_push ${flags} "-Clink-arg=${sysroot}/lib/crtn.o"
+array_push ${flags} "-Clink-arg=-lgcc"
+encoded = array_join ${flags} "${GM_MCTRL_US}"
 
 set_env CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER "${rs}/lib/rustlib/${CARGO_MAKE_RUST_TARGET_TRIPLE}/bin/rust-lld"
-set_env CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUSTFLAGS ${flags}
+set_env CARGO_ENCODED_RUSTFLAGS "${encoded}"
 
 cc = get_env GM_MCTRL_GLIBC_CC
 if not is_empty ${cc}

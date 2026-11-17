@@ -51,9 +51,24 @@ as `ld` scripts holding absolute paths that do not survive relocation.
 
 ## Using it
 
+The PMAS bootstrap fetches only `Makefile-pmas.toml`. A crate that wants glibc
+adds one line after it, fetching this task set beside it, and extends that file
+instead of `makefile/Makefile.toml`:
+
 ```toml
-extend = "makefile/Makefile.toml"   # fetched from Makefile-pmas-glibc.toml
+extend = "makefile/Makefile-pmas-glibc.toml"
+
+[config]
+load_script = '''
+<contents of makefile/pmas-bootstrap.ds>
+exec curl -m 10 --fail -L "https://github.com/globusmedical/res/raw/refs/heads/main/makefile/Makefile-pmas-glibc.toml" -o "${dir}/makefile/Makefile-pmas-glibc.toml"
+'''
 ```
+
+Commit the downloaded `makefile/Makefile-pmas-glibc.toml` as well, for the same
+reason as `makefile/Makefile.toml`: it is the offline fallback. The two task
+sets set `GM_MCTRL_TARGET_ARCH` differently, so a crate extends one or the
+other, never both.
 
 ```sh
 cargo make pmas_glibc build --release
